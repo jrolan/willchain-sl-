@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 
+import { AuthShell, Field } from "@/components/auth/auth-shell";
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
 export default function ResetPasswordPage() {
@@ -26,5 +28,15 @@ export default function ResetPasswordPage() {
     setMessage(response.ok ? "Password reset successfully." : "This reset link is invalid or expired.");
   }
 
-  return <main className="shell"><div className="panel"><div className="brand">WillChain SL</div><h2>Choose a new password</h2><p>{message}</p><form className="form" onSubmit={submit}><label>New password<input required type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label>Confirm password<input required type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button type="submit">Update password</button></form><div className="inline"><Link href="/login">Return to sign in</Link></div></div></main>;
+  return <AuthShell eyebrow="Account recovery" title="Choose a new password." description="Create a new password for your protected WillChain identity.">
+    <div className="recovery-card">
+      {message && <div className="recovery-success" role="status">{message}</div>}
+      <form className="recovery-form" onSubmit={submit}>
+        <Field label="New password" required type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
+        <Field label="Confirm password" required type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} />
+        <button className="recovery-submit" type="submit">Update password</button>
+      </form>
+      <Link className="recovery-link" href="/login">Return to sign in</Link>
+    </div>
+  </AuthShell>;
 }

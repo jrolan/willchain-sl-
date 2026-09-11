@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { FormEvent, useState } from "react";
 
+import { AuthShell, Field } from "@/components/auth/auth-shell";
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
 export default function ForgotPasswordPage() {
@@ -20,12 +22,13 @@ export default function ForgotPasswordPage() {
     setSent(true);
   }
 
-  return (
-    <main className="shell"><div className="panel">
-      <div className="brand">WillChain SL</div><h2>Reset password</h2>
-      <p>{sent ? "If the account exists, reset instructions have been sent." : "Enter your email to request reset instructions."}</p>
-      {!sent && <form className="form" onSubmit={submit}><label>Email<input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label><button type="submit">Request reset</button></form>}
-      <div className="inline"><Link href="/login">Return to sign in</Link></div>
-    </div></main>
-  );
+  return <AuthShell eyebrow="Account recovery" title="Reset your password." description="Enter the email connected to your WillChain identity and we will send instructions if the account exists.">
+    <div className="recovery-card">
+      {sent ? <div className="recovery-success" role="status">If the account exists, reset instructions have been sent.</div> : <form className="recovery-form" onSubmit={submit}>
+        <Field label="Email address" required type="email" autoComplete="email" placeholder="name@example.com" value={email} onChange={(event) => setEmail(event.target.value)} />
+        <button className="recovery-submit" type="submit">Request reset</button>
+      </form>}
+      <Link className="recovery-link" href="/login">Return to sign in</Link>
+    </div>
+  </AuthShell>;
 }

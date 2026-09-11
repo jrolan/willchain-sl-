@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ArrowRight, CircleUserRound, LogOut, ShieldCheck } from "lucide-react";
 
 import { useAuth } from "@/lib/auth-context";
+import { ThemeToggle } from "@/components/common/theme-provider";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -16,11 +17,11 @@ export default function DashboardPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f4f0e7] text-[#18352d]">
-      <header className="border-b border-[#dce4df] bg-[#fffdf8]">
+    <main className="dashboard-page min-h-screen">
+      <header className="dashboard-header">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-10 lg:px-16">
           <div className="flex items-center gap-3 text-sm font-bold text-[#123d35]"><span className="grid h-9 w-9 place-items-center rounded-full bg-[#123d35] text-white"><ShieldCheck size={17} /></span>WILLCHAIN SL</div>
-          <button className="inline-flex items-center gap-2 rounded-lg border border-[#ccd8d2] bg-white px-3 py-2 text-sm font-bold text-[#25473d] hover:border-[#176b5b]" disabled={busy} onClick={exit}><LogOut size={16} />{busy ? "Signing out..." : "Sign out"}</button>
+          <div className="flex items-center gap-3"><ThemeToggle /><button className="dashboard-signout inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold" disabled={busy} onClick={exit}><LogOut size={16} />{busy ? "Signing out..." : "Sign out"}</button></div>
         </div>
       </header>
       <section className="mx-auto max-w-7xl px-5 py-12 sm:px-10 lg:px-16">

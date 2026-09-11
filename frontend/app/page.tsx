@@ -1,13 +1,69 @@
+"use client";
+
 import Link from "next/link";
-import { ArrowRight, LockKeyhole, ShieldCheck, Scale } from "lucide-react";
+import {
+  ArrowRight,
+  CheckCircle2,
+  EyeOff,
+  Fingerprint,
+  Gavel,
+  LockKeyhole,
+  Scale,
+  ShieldCheck,
+  UserCheck,
+  Users,
+} from "lucide-react";
+import { ThemeToggle } from "@/components/common/theme-provider";
+
+const roles = [
+  { icon: UserCheck, title: "Testator", description: "Create and manage a private will." },
+  { icon: Gavel, title: "Lawyer", description: "Verify death documents and release conditions." },
+  { icon: Users, title: "Beneficiary", description: "Confirm identity and track beneficiary status." },
+  { icon: CheckCircle2, title: "Witness", description: "Confirm the will was created or signed." },
+  { icon: ShieldCheck, title: "Admin", description: "Support oversight, evidence, and audit controls." },
+];
 
 export default function HomePage() {
   return (
-    <main className="min-h-screen bg-[#f4f0e7] text-[#18352d]">
-      <nav className="mx-auto flex max-w-7xl items-center justify-between px-5 py-6 sm:px-10 lg:px-16"><Link href="/" className="flex items-center gap-3 text-sm font-bold tracking-[0.18em] text-[#123d35]"><span className="grid h-10 w-10 place-items-center rounded-full bg-[#123d35] text-[#f3dfae]"><Scale size={19} /></span>WILLCHAIN SL</Link><div className="flex items-center gap-4 text-sm font-semibold"><Link className="hidden text-[#60776e] hover:text-[#123d35] sm:block" href="/login">Sign in</Link><Link className="rounded-lg bg-[#176b5b] px-4 py-2.5 text-white shadow-sm hover:bg-[#0f5548]" href="/register">Create account</Link></div></nav>
-      <section className="mx-auto grid max-w-7xl gap-14 px-5 pb-20 pt-16 sm:px-10 lg:grid-cols-[1fr_0.8fr] lg:items-center lg:px-16 lg:pb-28 lg:pt-24">
-        <div><p className="text-xs font-bold uppercase tracking-[0.25em] text-[#aa7d34]">Digital will management · Sierra Leone</p><h1 className="mt-6 max-w-3xl text-5xl font-semibold leading-[0.94] tracking-[-0.05em] sm:text-7xl">Private by design. Accountable by record.</h1><p className="mt-7 max-w-xl text-lg leading-8 text-[#60776e]">A secure foundation for identity, protected records, and carefully governed access when it matters most.</p><div className="mt-9 flex flex-wrap items-center gap-4"><Link className="inline-flex items-center gap-2 rounded-lg bg-[#176b5b] px-5 py-3.5 text-sm font-bold text-white shadow-[0_10px_24px_rgba(23,107,91,0.2)] hover:bg-[#0f5548]" href="/register">Create an owner account <ArrowRight size={17} /></Link><Link className="text-sm font-bold text-[#176b5b] hover:underline" href="/login">Sign in to your workspace</Link></div></div>
-        <div className="relative overflow-hidden rounded-2xl bg-[#123d35] p-7 text-[#f4f0e7] shadow-[0_24px_60px_rgba(18,61,53,0.18)] sm:p-10"><div className="absolute -right-24 -top-24 h-64 w-64 rounded-full border border-[#c7a86b]/30" /><p className="relative text-xs font-bold uppercase tracking-[0.22em] text-[#f3dfae]">The access principle</p><p className="relative mt-7 text-3xl font-semibold leading-tight">A role is not a key to someone else’s private record.</p><div className="relative mt-9 grid gap-4 border-t border-[#d9e4de]/20 pt-6 text-sm text-[#d9e4de]"><div className="flex gap-3"><LockKeyhole className="shrink-0 text-[#f3dfae]" size={18} /><span>Authentication identifies the person.</span></div><div className="flex gap-3"><ShieldCheck className="shrink-0 text-[#f3dfae]" size={18} /><span>Permissions govern the specific action.</span></div></div></div>
+    <main className="home-page">
+      <nav className="home-nav">
+        <Link href="/" className="brand-mark"><span className="brand-icon"><Scale size={19} /></span>WILLCHAIN SL</Link>
+        <div className="nav-actions">
+          <ThemeToggle />
+          <Link className="nav-sign-in" href="/login">Sign in</Link>
+          <Link className="nav-create" href="/register">Create account</Link>
+        </div>
+      </nav>
+
+      <section className="home-content">
+        <div className="home-heading">
+          <div className="secure-badge"><Fingerprint size={15} /> Private by design</div>
+          <h1>WillChain <span>SL</span></h1>
+          <p>Secure digital wills, verified on-chain.</p>
+        </div>
+
+        <div className="trust-row" aria-label="WillChain security features">
+          <span><Fingerprint size={14} /> Identity verified</span>
+          <span><EyeOff size={14} /> Private by default</span>
+          <span><ShieldCheck size={14} /> Auditable release</span>
+        </div>
+
+        <div className="role-grid">
+          {roles.map(({ icon: Icon, title, description }) => (
+            <article className="role-card" key={title}>
+              <Icon className="role-icon" size={20} />
+              <h2>{title}</h2>
+              <p>{description}</p>
+            </article>
+          ))}
+        </div>
+
+        <div className="home-actions">
+          <Link className="primary-action" href="/register">Get started <ArrowRight size={17} /></Link>
+          <Link className="secondary-action" href="/login">Log in to your workspace</Link>
+        </div>
+
+        <p className="privacy-note"><LockKeyhole size={14} /> Nobody receives will content until the required release checks are complete.</p>
       </section>
     </main>
   );
