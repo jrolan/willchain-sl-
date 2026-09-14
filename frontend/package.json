@@ -12,7 +12,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "echo \"Frontend tests are not configured yet\""
+    "test": "node --test tests/auth.test.mjs"
   },
   "keywords": [],
   "author": "",

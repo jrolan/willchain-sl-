@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -26,7 +27,7 @@ env.read_env(BASE_DIR / '.env')
 
 SECRET_KEY = env('DJANGO_SECRET_KEY')
 
-DEBUG = env('DJANGO_DEBUG')
+DEBUG = env.bool('DJANGO_DEBUG', default=False)
 
 ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=[])
 
@@ -44,6 +45,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'apps.accounts',
+    'apps.audit',
 ]
 
 MIDDLEWARE = [
@@ -91,6 +93,15 @@ DATABASES = {
     }
 }
 
+# During automated test runs, default to SQLite in-memory for speed and test isolation
+if 'test' in sys.argv or any('pytest' in arg for arg in sys.argv) or 'pytest' in sys.modules:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:',
+        }
+    }
+
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
@@ -127,6 +138,8 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -142,11 +155,27 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    'DEFAULT_THROTTLE_CLASSES': (
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '300/hour',
+        'user': '2000/hour',
+        'auth': '60/minute',
+    },
 }
 
-CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[])
+CORS_ALLOWED_ORIGINS = env.list(
+    'CORS_ALLOWED_ORIGINS',
+    default=['http://localhost:3000', 'http://127.0.0.1:3000'],
+)
 CORS_ALLOW_CREDENTIALS = True
-AUTH_REFRESH_COOKIE_SECURE = env('AUTH_REFRESH_COOKIE_SECURE', default=not DEBUG)
+CSRF_TRUSTED_ORIGINS = env.list(
+    'CSRF_TRUSTED_ORIGINS',
+    default=['http://localhost:3000', 'http://127.0.0.1:3000'],
+)
+AUTH_REFRESH_COOKIE_SECURE = env.bool('AUTH_REFRESH_COOKIE_SECURE', default=not DEBUG)
 FRONTEND_BASE_URL = env('FRONTEND_BASE_URL', default='http://localhost:3000')
 
 EMAIL_BACKEND = env(

@@ -1,8 +1,10 @@
 from django.urls import path
 
 from .views import (
+    AcceptInvitationView,
     ChangePasswordView,
     ForgotPasswordView,
+    InvitationListView,
     LoginView,
     LogoutView,
     MeView,
@@ -24,4 +26,6 @@ urlpatterns = [
     path('forgot-password/', ForgotPasswordView.as_view(), name='forgot-password'),
     path('reset-password/', ResetPasswordView.as_view(), name='reset-password'),
     path('verify-email/', VerifyEmailView.as_view(), name='verify-email'),
+    path('invitations/', InvitationListView.as_view(), name='invitations'),
+    path('invitations/accept/', AcceptInvitationView.as_view(), name='accept-invitation'),
 ]

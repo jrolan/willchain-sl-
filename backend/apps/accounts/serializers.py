@@ -1,10 +1,11 @@
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.tokens import default_token_generator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
 from rest_framework import serializers
 
-from .models import User
+from .models import Invitation, User
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -16,6 +17,7 @@ class UserSerializer(serializers.ModelSerializer):
             'first_name',
             'last_name',
             'phone_number',
+            'avatar',
             'role',
             'account_status',
             'email_verified',
@@ -31,6 +33,17 @@ class UserSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         )
+
+    def validate_avatar(self, value):
+        if value:
+            max_size = 5 * 1024 * 1024  # 5MB
+            if value.size > max_size:
+                raise serializers.ValidationError('Avatar file size cannot exceed 5MB.')
+            import os
+            ext = os.path.splitext(value.name)[1].lower()
+            if ext not in ('.jpg', '.jpeg', '.png', '.webp'):
+                raise serializers.ValidationError('Only JPG, PNG, and WebP images are allowed.')
+        return value
 
 
 class RegistrationSerializer(serializers.Serializer):
@@ -103,6 +116,10 @@ class ResetPasswordSerializer(serializers.Serializer):
             user = User.objects.get(pk=user_id)
         except (TypeError, ValueError, OverflowError, User.DoesNotExist):
             raise serializers.ValidationError('Invalid password reset request.')
+
+        if not default_token_generator.check_token(user, attrs['token']):
+            raise serializers.ValidationError('Invalid or expired password reset token.')
+
         validate_password(attrs['new_password'], user)
         attrs['user'] = user
         return attrs
@@ -111,3 +128,69 @@ class ResetPasswordSerializer(serializers.Serializer):
 class VerifyEmailSerializer(serializers.Serializer):
     uid = serializers.CharField()
     token = serializers.CharField()
+
+
+class InvitationSerializer(serializers.ModelSerializer):
+    inviter_email = serializers.ReadOnlyField(source='inviter.email')
+
+    class Meta:
+        model = Invitation
+        fields = (
+            'id',
+            'inviter_email',
+            'email',
+            'first_name',
+            'last_name',
+            'role',
+            'status',
+            'message',
+            'expires_at',
+            'created_at',
+            'token',
+        )
+        read_only_fields = ('id', 'inviter_email', 'status', 'expires_at', 'created_at', 'token')
+
+    def validate_role(self, value):
+        if value not in (Invitation.RoleChoices.WITNESS, Invitation.RoleChoices.BENEFICIARY, Invitation.RoleChoices.LAWYER_VERIFIER):
+            raise serializers.ValidationError('Role must be WITNESS, BENEFICIARY, or LAWYER_VERIFIER.')
+        return value
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        email = attrs['email'].lower()
+        if request and request.user.email.lower() == email:
+            raise serializers.ValidationError({'email': 'You cannot invite yourself.'})
+        if User.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError({'email': 'A user with this email is already registered.'})
+        if Invitation.objects.filter(email__iexact=email, status=Invitation.Status.PENDING).exists():
+            raise serializers.ValidationError({'email': 'A pending invitation already exists for this email.'})
+        attrs['email'] = email
+        return attrs
+
+    def create(self, validated_data):
+        validated_data['inviter'] = self.context['request'].user
+        return super().create(validated_data)
+
+
+class AcceptInvitationSerializer(serializers.Serializer):
+    token = serializers.CharField()
+    first_name = serializers.CharField(max_length=150, required=False)
+    last_name = serializers.CharField(max_length=150, required=False)
+    phone_number = serializers.CharField(max_length=30, required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+    password_confirmation = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs['password_confirmation']:
+            raise serializers.ValidationError({'password_confirmation': 'Passwords do not match.'})
+        try:
+            invitation = Invitation.objects.get(token=attrs['token'])
+        except Invitation.DoesNotExist:
+            raise serializers.ValidationError({'token': 'Invalid invitation token.'})
+
+        if not invitation.is_valid():
+            raise serializers.ValidationError({'token': 'Invitation is expired or no longer pending.'})
+
+        validate_password(attrs['password'])
+        attrs['invitation'] = invitation
+        return attrs

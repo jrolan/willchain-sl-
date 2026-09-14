@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
 import { getProfile, login, logout, register } from "@/services/auth-service";
 import type { User } from "@/types/auth";
@@ -8,9 +8,12 @@ import type { User } from "@/types/auth";
 type AuthContextValue = {
   user: User | null;
   busy: boolean;
+  initialLoading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (payload: Record<string, string>) => Promise<void>;
   signOut: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+  setUser: (user: User | null) => void;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -18,6 +21,41 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [busy, setBusy] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  // Session rehydration on mount
+  useEffect(() => {
+    let mounted = true;
+    const hasSessionCookie = document.cookie.includes("csrftoken=");
+    if (!hasSessionCookie) {
+      setInitialLoading(false);
+      return () => {
+        mounted = false;
+      };
+    }
+    getProfile()
+      .then(({ data }) => {
+        if (mounted) setUser(data);
+      })
+      .catch(() => {
+        if (mounted) setUser(null);
+      })
+      .finally(() => {
+        if (mounted) setInitialLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  async function refreshUser() {
+    try {
+      const { data } = await getProfile();
+      setUser(data);
+    } catch {
+      setUser(null);
+    }
+  }
 
   async function signIn(email: string, password: string) {
     setBusy(true);
@@ -47,7 +85,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  return <AuthContext.Provider value={{ user, busy, signIn, signUp, signOut }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider
+      value={{ user, busy, initialLoading, signIn, signUp, signOut, refreshUser, setUser }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {
