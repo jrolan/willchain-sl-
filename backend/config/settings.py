@@ -168,12 +168,22 @@ REST_FRAMEWORK = {
 
 CORS_ALLOWED_ORIGINS = env.list(
     'CORS_ALLOWED_ORIGINS',
-    default=['http://localhost:3000', 'http://127.0.0.1:3000'],
+    default=[
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:3001',
+        'http://127.0.0.1:3001',
+    ],
 )
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = env.list(
     'CSRF_TRUSTED_ORIGINS',
-    default=['http://localhost:3000', 'http://127.0.0.1:3000'],
+    default=[
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:3001',
+        'http://127.0.0.1:3001',
+    ],
 )
 AUTH_REFRESH_COOKIE_SECURE = env.bool('AUTH_REFRESH_COOKIE_SECURE', default=not DEBUG)
 FRONTEND_BASE_URL = env('FRONTEND_BASE_URL', default='http://localhost:3000')
