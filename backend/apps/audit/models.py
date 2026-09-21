@@ -15,6 +15,11 @@ class AuditEvent(models.Model):
         INVITATION_SENT = 'INVITATION_SENT', 'Invitation sent'
         INVITATION_ACCEPTED = 'INVITATION_ACCEPTED', 'Invitation accepted'
         ACCOUNT_STATUS_CHANGED = 'ACCOUNT_STATUS_CHANGED', 'Account status changed'
+        WILL_CREATED = 'WILL_CREATED', 'Will created'
+        WILL_ACCESSED = 'WILL_ACCESSED', 'Will accessed'
+        WILL_UPDATED = 'WILL_UPDATED', 'Will updated'
+        WILL_FINALIZED = 'WILL_FINALIZED', 'Will finalized'
+        WILL_ACCESS_DENIED = 'WILL_ACCESS_DENIED', 'Will access denied'
         SECURITY_ALERT = 'SECURITY_ALERT', 'Security alert'
 
     event_type = models.CharField(max_length=64, choices=EventType.choices, db_index=True)

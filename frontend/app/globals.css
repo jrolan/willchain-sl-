@@ -143,6 +143,33 @@ html[data-theme="dark"] .dashboard-page [class*="text-[#6d572c]"] { color: #e7c9
 html[data-theme="dark"] .dashboard-page [class*="text-[#60776e]"],
 html[data-theme="dark"] .dashboard-page [class*="text-[#809189]"] { color: var(--muted); }
 
+.will-workspace { background: #f1eee6; }
+.will-workspace .dashboard-header { background: rgb(255 253 248 / 86%); }
+.will-workspace > section { align-items: start; max-width: 1240px; }
+.will-workspace aside { position: sticky; top: 28px; }
+.will-workspace aside h1 { font-size: clamp(2.7rem, 5vw, 4.7rem); letter-spacing: -.055em; line-height: .94; margin: 18px 0 0; }
+.will-workspace aside > p:not(.text-xs) { max-width: 250px; }
+.will-workspace aside nav button { background: transparent; border-radius: 0; color: var(--muted); padding: 13px 4px; }
+.will-workspace aside nav button:hover { background: transparent; color: var(--accent); }
+.will-workspace aside nav button span { font-family: Arial, sans-serif; }
+.will-workspace > section > div > .rounded-xl { border-radius: 3px; box-shadow: 0 16px 45px rgb(23 36 31 / 7%); }
+.will-workspace h2 { font-size: clamp(1.75rem, 3vw, 2.55rem); letter-spacing: -.035em; }
+.will-workspace input, .will-workspace textarea, .will-workspace select { border-radius: 3px; }
+.will-workspace input:focus, .will-workspace textarea:focus, .will-workspace select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgb(23 107 91 / 10%); outline: none; }
+.will-workspace > section > div > section { border-radius: 3px; }
+html[data-theme="dark"] .will-workspace { background: var(--paper); }
+
+@media (max-width: 1023px) {
+  .will-workspace aside { position: static; }
+  .will-workspace aside nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 14px; }
+}
+
+@media (max-width: 560px) {
+  .will-workspace aside h1 { font-size: 3.15rem; }
+  .will-workspace aside nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .will-workspace > section { padding-top: 28px; }
+}
+
 .profile-page { background: var(--paper); color: var(--ink); min-height: 100vh; }
 .profile-header { align-items: center; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; padding: 22px clamp(20px, 6vw, 88px); }
 .profile-brand { align-items: center; display: flex; font-size: .82rem; font-weight: 700; gap: 9px; letter-spacing: .12em; }

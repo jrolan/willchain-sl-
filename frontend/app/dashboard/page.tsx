@@ -19,8 +19,9 @@ import {
 } from "lucide-react";
 
 import { useAuth } from "@/lib/auth-context";
-import { getInvitations, getProfile, sendInvitation } from "@/services/auth-service";
+import { createWill, finalizeWill, getInvitations, getProfile, getWills, sendInvitation, updateWill } from "@/services/auth-service";
 import type { Invitation, InvitationRole, User } from "@/types/auth";
+import type { Will } from "@/types/wills";
 import { ThemeToggle } from "@/components/common/theme-provider";
 
 const API_ORIGIN = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1").replace(/\/api\/v1\/?$/, "");
@@ -56,6 +57,12 @@ export default function DashboardPage() {
   const [inviteSuccess, setInviteSuccess] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
   const [copiedToken, setCopiedToken] = useState("");
+  const [wills, setWills] = useState<Will[]>([]);
+  const [willTitle, setWillTitle] = useState("");
+  const [willBody, setWillBody] = useState("");
+  const [editingWillId, setEditingWillId] = useState<number | null>(null);
+  const [willBusy, setWillBusy] = useState(false);
+  const [willError, setWillError] = useState("");
 
   // Route protection
   useEffect(() => {
@@ -70,6 +77,7 @@ export default function DashboardPage() {
       setProfileUser(data);
       if (data.role === "OWNER") {
         loadInvitations();
+        loadWills();
       }
     }).catch(() => setProfileUser(user));
   }, [user]);
@@ -83,6 +91,67 @@ export default function DashboardPage() {
       // Ignored if not authorized
     } finally {
       setLoadingInvitations(false);
+    }
+  }
+
+  async function loadWills() {
+    try {
+      const response = await getWills();
+      setWills(response.data);
+    } catch {
+      setWillError("Unable to load your wills.");
+    }
+  }
+
+  function beginWillEdit(will: Will) {
+    setEditingWillId(will.id);
+    setWillTitle(will.title);
+    setWillBody(String(will.content.sections?.[0]?.body ?? ""));
+    setWillError("");
+  }
+
+  function beginWillCreate() {
+    setEditingWillId(null);
+    setWillTitle("");
+    setWillBody("");
+    setWillError("");
+  }
+
+  async function saveWill(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setWillBusy(true);
+    setWillError("");
+    const payload = {
+      title: willTitle,
+      content: { sections: [{ title: "Will instructions", body: willBody }] },
+    };
+    try {
+      if (editingWillId) {
+        await updateWill(editingWillId, payload);
+      } else {
+        await createWill(payload);
+      }
+      await loadWills();
+      beginWillCreate();
+    } catch (err) {
+      setWillError(err instanceof Error ? err.message : "Unable to save this will draft.");
+    } finally {
+      setWillBusy(false);
+    }
+  }
+
+  async function handleFinalize(will: Will) {
+    if (!window.confirm(`Finalize "${will.title}"? Finalized wills cannot be edited.`)) return;
+    setWillBusy(true);
+    setWillError("");
+    try {
+      await finalizeWill(will.id);
+      await loadWills();
+      if (editingWillId === will.id) beginWillCreate();
+    } catch (err) {
+      setWillError(err instanceof Error ? err.message : "Unable to finalize this will.");
+    } finally {
+      setWillBusy(false);
     }
   }
 
@@ -195,6 +264,55 @@ export default function DashboardPage() {
         {/* --- ROLE-SPECIFIC WORKSPACE CONTENT --- */}
         {profileUser?.role === "OWNER" && (
           <div className="mt-12">
+            <div className="rounded-xl border border-[#dce4df] bg-white p-6 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-2xl font-semibold text-[#17372f]">My Wills</h2>
+                  <p className="mt-1 text-sm text-[#60776e]">Draft, review, and finalize your private digital will.</p>
+                </div>
+                <button type="button" onClick={() => router.push("/dashboard/wills")} className="inline-flex items-center gap-2 rounded-lg bg-[#176b5b] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#0f5548]">
+                  <Plus size={16} /> New will
+                </button>
+              </div>
+
+              {willError && <div className="mt-4 rounded-lg bg-[#fff3ed] p-3 text-sm text-[#8c422c]" role="alert">{willError}</div>}
+
+              {(editingWillId !== null || (wills.length === 0 && !willBusy)) && (
+                <form className="mt-6 grid gap-4 border-t border-[#edf1ee] pt-6" onSubmit={saveWill}>
+                  <label className="text-sm font-semibold text-[#17372f]">
+                    Will title
+                    <input required value={willTitle} onChange={(event) => setWillTitle(event.target.value)} className="mt-1.5 w-full rounded-lg border border-[#dce4df] p-2.5 font-normal" placeholder="My last will and testament" />
+                  </label>
+                  <label className="text-sm font-semibold text-[#17372f]">
+                    Draft instructions
+                    <textarea required rows={5} value={willBody} onChange={(event) => setWillBody(event.target.value)} className="mt-1.5 w-full rounded-lg border border-[#dce4df] p-2.5 font-normal" placeholder="Record the instructions you want to review before finalization." />
+                  </label>
+                  <div className="flex justify-end gap-3">
+                    {editingWillId !== null && <button type="button" onClick={beginWillCreate} className="rounded-lg px-4 py-2 text-sm font-semibold text-[#60776e] hover:bg-gray-100">Cancel</button>}
+                    <button type="submit" disabled={willBusy} className="rounded-lg bg-[#176b5b] px-5 py-2 text-sm font-semibold text-white hover:bg-[#0f5548]">{willBusy ? "Saving..." : editingWillId ? "Save draft" : "Create draft"}</button>
+                  </div>
+                </form>
+              )}
+
+              <div className="mt-6 grid gap-3">
+                {wills.length === 0 ? (
+                  <p className="rounded-lg bg-[#fafaf8] p-5 text-sm text-[#809189]">No wills yet. Create your first draft to begin.</p>
+                ) : wills.map((will) => (
+                  <div key={will.id} className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-[#edf1ee] p-4">
+                    <div>
+                      <p className="font-semibold text-[#17372f]">{will.title}</p>
+                      <p className="mt-1 text-xs text-[#809189]">Version {will.version} · Updated {new Date(will.updated_at).toLocaleDateString()}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${will.status === "FINALIZED" ? "bg-[#d8f0e5] text-[#0f5548]" : "bg-[#fff3d6] text-[#8c5e15]"}`}>{will.status}</span>
+                      {will.status === "DRAFT" && <button type="button" onClick={() => beginWillEdit(will)} className="rounded-lg border border-[#dce4df] px-3 py-1.5 text-xs font-semibold text-[#176b5b]">Edit</button>}
+                      {will.status === "DRAFT" && <button type="button" disabled={willBusy} onClick={() => handleFinalize(will)} className="rounded-lg bg-[#176b5b] px-3 py-1.5 text-xs font-semibold text-white">Finalize</button>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-2xl font-semibold text-[#17372f]">Estate Collaborators & Invitations</h2>

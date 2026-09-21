@@ -1,4 +1,5 @@
 import type { ApiError, AuthResponse, Invitation, InvitationDetail, User } from "@/types/auth";
+import type { Will, WillPayload } from "@/types/wills";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 let accessToken: string | null = null;
@@ -160,4 +161,28 @@ export async function acceptInvitation(payload: { token: string; first_name?: st
   });
   accessToken = result.data.access;
   return result;
+}
+
+export async function getWills(): Promise<{ data: Will[] }> {
+  return request("/wills/");
+}
+
+export async function createWill(payload: WillPayload): Promise<{ data: Will; message: string }> {
+  return request("/wills/", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateWill(id: number, payload: WillPayload): Promise<{ data: Will; message: string }> {
+  return request(`/wills/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function finalizeWill(id: number): Promise<{ data: Will; message: string }> {
+  return request(`/wills/${id}/finalize/`, {
+    method: "POST",
+  });
 }

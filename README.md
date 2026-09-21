@@ -2,7 +2,9 @@
 
 Secure digital will-management academic project for Sierra Leone.
 
-The repository will contain a Next.js frontend and a Django REST Framework backend. The backend structure has been created first; application implementation begins after the Python/Django environment is available and the architecture is approved.
+The repository contains a Next.js frontend and a Django REST Framework backend. Module 1 authentication and the Module 2 will-management foundation are implemented incrementally under the approved architecture.
+
+Module 2 currently covers private owner drafts, lifecycle state, versioning, finalization, object-level authorization, audit events, and the authenticated owner dashboard workflow. Blockchain integrity and AI services are reserved for later modules.
 
 ## Local Docker setup
 
