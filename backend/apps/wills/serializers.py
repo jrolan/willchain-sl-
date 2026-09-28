@@ -37,13 +37,36 @@ class WillSerializer(serializers.ModelSerializer):
     def validate_title(self, value):
         if not value or not value.strip():
             raise serializers.ValidationError('Title is required.')
-        return value.strip()
+        trimmed = value.strip()
+        if len(trimmed) > 200:
+            raise serializers.ValidationError('Title must not exceed 200 characters.')
+        return trimmed
+
+    def _check_depth(self, data, current_depth=1, max_depth=10):
+        if current_depth > max_depth:
+            raise serializers.ValidationError('Content structure cannot be nested deeper than 10 levels.')
+        if isinstance(data, dict):
+            for v in data.values():
+                self._check_depth(v, current_depth + 1, max_depth)
+        elif isinstance(data, list):
+            for item in data:
+                self._check_depth(item, current_depth + 1, max_depth)
 
     def validate_content(self, value):
         if value is None:
             return {}
         if not isinstance(value, dict):
             raise serializers.ValidationError('Content must be a JSON object.')
+
+        self._check_depth(value, current_depth=1, max_depth=10)
+
+        import json
+        try:
+            serialized = json.dumps(value)
+            if len(serialized.encode('utf-8')) > 100 * 1024:
+                raise serializers.ValidationError('Content size exceeds maximum allowed limit of 100 KB.')
+        except (TypeError, ValueError):
+            raise serializers.ValidationError('Content must be a valid JSON object.')
 
         object_fields = ('testator', 'family', 'executor')
         for field_name in object_fields:

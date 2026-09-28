@@ -1,3 +1,5 @@
+from django.db import transaction
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied
@@ -44,20 +46,23 @@ class WillDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = (IsAuthenticated, IsActiveAccount, IsOwner)
 
     def get_queryset(self):
-        return Will.objects.select_related('owner')
+        return Will.objects.filter(owner=self.request.user).select_related('owner')
 
     def get_object(self):
-        obj = get_object_or_404(self.get_queryset(), pk=self.kwargs['pk'])
-        try:
-            self.check_object_permissions(self.request, obj)
-        except PermissionDenied:
-            log_audit_event(
-                AuditEvent.EventType.WILL_ACCESS_DENIED,
-                request=self.request,
-                actor=self.request.user,
-                details={'will_id': obj.pk, 'operation': self.request.method},
-            )
-            raise
+        pk = self.kwargs['pk']
+        obj = Will.objects.filter(owner=self.request.user, pk=pk).select_related('owner').first()
+        if not obj:
+            # Audit unauthorized IDOR attempt if the object exists for another user
+            other_obj = Will.objects.filter(pk=pk).first()
+            if other_obj:
+                log_audit_event(
+                    AuditEvent.EventType.WILL_ACCESS_DENIED,
+                    request=self.request,
+                    actor=self.request.user,
+                    details={'will_id': other_obj.pk, 'operation': self.request.method},
+                )
+            raise Http404('No Will matches the given query.')
+        self.check_object_permissions(self.request, obj)
         return obj
 
     def retrieve(self, request, *args, **kwargs):
@@ -95,29 +100,39 @@ class WillDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
                 {'error': {'code': 'WILL_FINALIZED', 'message': 'A finalized will cannot be deleted.'}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        return super().destroy(request, *args, **kwargs)
+        response = super().destroy(request, *args, **kwargs)
+        log_audit_event(
+            AuditEvent.EventType.WILL_DELETED,
+            request=request,
+            actor=request.user,
+            details={'will_id': instance.pk, 'version': instance.version},
+        )
+        return response
 
 
 class FinalizeWillAPIView(generics.GenericAPIView):
     serializer_class = WillSerializer
     permission_classes = (IsAuthenticated, IsActiveAccount, IsOwner)
 
-    def get_object(self):
-        obj = get_object_or_404(Will.objects.select_related('owner'), pk=self.kwargs['pk'])
-        try:
-            self.check_object_permissions(self.request, obj)
-        except PermissionDenied:
-            log_audit_event(
-                AuditEvent.EventType.WILL_ACCESS_DENIED,
-                request=self.request,
-                actor=self.request.user,
-                details={'will_id': obj.pk, 'operation': 'FINALIZE'},
-            )
-            raise
-        return obj
-
+    @transaction.atomic
     def post(self, request, *args, **kwargs):
-        will = self.get_object()
+        pk = self.kwargs['pk']
+        # Row-level pessimistic locking within atomic transaction to prevent double-submit race condition
+        will = Will.objects.select_for_update().filter(owner=request.user, pk=pk).select_related('owner').first()
+        if not will:
+            other_will = Will.objects.filter(pk=pk).first()
+            if other_will:
+                log_audit_event(
+                    AuditEvent.EventType.WILL_ACCESS_DENIED,
+                    request=self.request,
+                    actor=self.request.user,
+                    details={'will_id': other_will.pk, 'operation': 'FINALIZE'},
+                )
+            return Response(
+                {'error': {'code': 'NOT_FOUND', 'message': 'Will not found.'}},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         if will.status == Will.Status.FINALIZED:
             return Response(
                 {'error': {'code': 'WILL_ALREADY_FINALIZED', 'message': 'This will is already finalized.'}},

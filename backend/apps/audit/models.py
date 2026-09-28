@@ -19,6 +19,7 @@ class AuditEvent(models.Model):
         WILL_ACCESSED = 'WILL_ACCESSED', 'Will accessed'
         WILL_UPDATED = 'WILL_UPDATED', 'Will updated'
         WILL_FINALIZED = 'WILL_FINALIZED', 'Will finalized'
+        WILL_DELETED = 'WILL_DELETED', 'Will deleted'
         WILL_ACCESS_DENIED = 'WILL_ACCESS_DENIED', 'Will access denied'
         SECURITY_ALERT = 'SECURITY_ALERT', 'Security alert'
 

@@ -11,7 +11,7 @@ class Will(models.Model):
 
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name='wills',
     )
     title = models.CharField(max_length=200)
