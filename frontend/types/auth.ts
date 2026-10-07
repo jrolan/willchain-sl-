@@ -1,5 +1,6 @@
 export type UserRole =
   | "OWNER"
+  | "MEMBER"
   | "WITNESS"
   | "BENEFICIARY"
   | "LAWYER_VERIFIER"
@@ -38,7 +39,7 @@ export interface ApiError {
   message?: string;
 }
 
-export type InvitationRole = "WITNESS" | "BENEFICIARY" | "LAWYER_VERIFIER";
+export type InvitationRole = "WITNESS" | "LAWYER_VERIFIER";
 export type InvitationStatus = "PENDING" | "ACCEPTED" | "EXPIRED" | "REVOKED";
 
 export interface Invitation {
@@ -52,7 +53,6 @@ export interface Invitation {
   message: string;
   expires_at: string;
   created_at: string;
-  token?: string;
 }
 
 export interface InvitationDetail {

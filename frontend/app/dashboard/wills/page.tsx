@@ -1,10 +1,11 @@
 "use client";
 
-import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { ArrowLeft, Check, ChevronLeft, ChevronRight, FilePenLine, LockKeyhole, Save, ShieldCheck } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, FilePenLine, LockKeyhole, Save, ShieldCheck } from "lucide-react";
 
+import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { useAuth } from "@/lib/auth-context";
+import { WillBeneficiaryManager } from "@/components/beneficiaries/will-beneficiary-manager";
 import { createWill, finalizeWill, getProfile, getWills, updateWill } from "@/services/auth-service";
 import type { User } from "@/types/auth";
 import type { Will, WillContent } from "@/types/wills";
@@ -139,14 +140,8 @@ export default function WillsWorkspacePage() {
   if (initialLoading || loading) return <main className="min-h-screen p-10 text-[#60776e]">Loading your private will workspace...</main>;
 
   return (
-    <main className="dashboard-page will-workspace min-h-screen">
-      <header className="dashboard-header">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-10 lg:px-16">
-          <Link href="/dashboard" className="inline-flex items-center gap-2 text-sm font-bold text-[#17372f]"><ArrowLeft size={16} /> Dashboard</Link>
-          <div className="inline-flex items-center gap-2 text-sm font-bold text-[#17372f]"><ShieldCheck size={17} /> WILLCHAIN SL</div>
-        </div>
-      </header>
-
+    <DashboardShell profileUser={profileUser}>
+      <div className="dashboard-page will-workspace">
       <section className="mx-auto grid max-w-7xl gap-8 px-5 py-10 sm:px-10 lg:grid-cols-[260px_1fr] lg:px-16">
         <aside>
           <p className="text-xs font-bold uppercase tracking-wider text-[#aa7d34]">Private workspace</p>
@@ -201,9 +196,16 @@ export default function WillsWorkspacePage() {
           </div>
 
           <section className="mt-6 rounded-xl border border-[#dce4df] bg-white p-6 shadow-sm"><div className="flex items-center justify-between gap-3"><h2 className="text-lg font-semibold text-[#17372f]">Saved drafts</h2><button type="button" onClick={startNew} className="text-sm font-bold text-[#176b5b]">Start new</button></div>{wills.length === 0 ? <p className="mt-4 text-sm text-[#809189]">No saved drafts yet.</p> : <div className="mt-4 grid gap-2">{wills.map((will) => <button type="button" key={will.id} onClick={() => selectWill(will)} className={`flex items-center justify-between rounded-lg border p-3 text-left ${selectedWillId === will.id ? "border-[#176b5b] bg-[#f5faf7]" : "border-[#edf1ee]"}`}><span><span className="block text-sm font-semibold text-[#17372f]">{will.title}</span><span className="text-xs text-[#809189]">Version {will.version}</span></span><span className="text-xs font-bold text-[#176b5b]">{will.status}</span></button>)}</div>}</section>
+          <div id="beneficiaries">
+            {selectedWillId !== null ? (() => {
+              const selectedWill = wills.find((will) => will.id === selectedWillId);
+              return selectedWill ? <WillBeneficiaryManager key={selectedWill.id} willId={selectedWill.id} willStatus={selectedWill.status} /> : null;
+            })() : <p className="mt-6 rounded-lg border border-[#dce4df] bg-white p-4 text-sm text-[#60776e]">Select a saved will to manage its beneficiary relationships.</p>}
+          </div>
         </div>
       </section>
-    </main>
+      </div>
+    </DashboardShell>
   );
 }
 

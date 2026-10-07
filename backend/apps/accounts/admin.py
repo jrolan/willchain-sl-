@@ -28,4 +28,5 @@ class InvitationAdmin(admin.ModelAdmin):
 	list_display = ('email', 'role', 'inviter', 'status', 'expires_at', 'created_at')
 	list_filter = ('role', 'status', 'created_at')
 	search_fields = ('email', 'inviter__email', 'first_name', 'last_name')
-	readonly_fields = ('token', 'created_at', 'updated_at', 'accepted_at')
+	readonly_fields = ('created_at', 'updated_at', 'accepted_at')
+	exclude = ('token_hash',)

@@ -62,6 +62,10 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
   return parseResponse<T>(response);
 }
 
+export function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return request<T>(path, init);
+}
+
 export async function register(payload: Record<string, string>): Promise<{ data: User; message: string }> {
   return request("/auth/register/", { method: "POST", body: JSON.stringify(payload) });
 }
@@ -154,13 +158,11 @@ export async function getInvitationDetail(token: string): Promise<{ data: Invita
   return request(`/auth/invitations/accept/?token=${encodeURIComponent(token)}`);
 }
 
-export async function acceptInvitation(payload: { token: string; first_name?: string; last_name?: string; phone_number?: string; password: string; password_confirmation: string }): Promise<{ data: { access: string; user: User }; message: string }> {
-  const result = await request<{ data: { access: string; user: User }; message: string }>("/auth/invitations/accept/", {
+export async function acceptInvitation(payload: { token: string; email?: string; first_name?: string; last_name?: string; phone_number?: string; password?: string; password_confirmation?: string }): Promise<{ data: User; message: string }> {
+  return request<{ data: User; message: string }>("/auth/invitations/accept/", {
     method: "POST",
     body: JSON.stringify(payload),
   });
-  accessToken = result.data.access;
-  return result;
 }
 
 export async function getWills(): Promise<{ data: Will[] }> {

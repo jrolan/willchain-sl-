@@ -49,6 +49,42 @@ class WillManagementApiTests(APITestCase):
             ).exists()
         )
 
+    def test_member_can_create_and_list_only_their_own_wills(self):
+        member = self.active_user(email='member-owner@example.com', role=User.Role.MEMBER)
+        other_owner = self.active_user(email='other-owner@example.com')
+        other_will = Will.objects.create(owner=other_owner, title='Private Will', content={'body': 'private'})
+        headers = self.auth_headers(member)
+
+        create_response = self.client.post(
+            reverse('wills:will-list'),
+            {'title': 'Member Will', 'content': {'body': 'member private'}},
+            format='json',
+            **headers,
+        )
+        list_response = self.client.get(reverse('wills:will-list'), **headers)
+        other_detail_response = self.client.get(
+            reverse('wills:will-detail', args=[other_will.pk]),
+            **headers,
+        )
+
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(list_response.data['data']), 1)
+        self.assertEqual(list_response.data['data'][0]['owner'], member.pk)
+        self.assertEqual(other_detail_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_member_cannot_use_legacy_generic_invitation_api(self):
+        member = self.active_user(email='member-legacy-invite@example.com', role=User.Role.MEMBER)
+
+        response = self.client.post(
+            reverse('accounts:invitations'),
+            {'email': 'collaborator@example.com', 'role': 'WITNESS'},
+            format='json',
+            **self.auth_headers(member),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
     def test_owner_can_save_structured_will_content(self):
         owner = self.active_user(email='structured-owner@example.com')
         response = self.client.post(
@@ -299,6 +335,32 @@ class WillManagementApiTests(APITestCase):
         response = self.client.delete(reverse('wills:will-detail', args=[will.pk]), **self.auth_headers(owner))
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertTrue(Will.objects.filter(pk=will.pk).exists())
+
+    def test_archived_will_cannot_be_edited(self):
+        owner = self.active_user(email='owner_archived_edit@example.com')
+        will = Will.objects.create(owner=owner, title='Archived Will', content={'body': 'initial'}, status=Will.Status.ARCHIVED)
+
+        response = self.client.patch(
+            reverse('wills:will-detail', args=[will.pk]),
+            {'title': 'Changed title', 'content': {'body': 'changed'}},
+            format='json',
+            **self.auth_headers(owner),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        will.refresh_from_db()
+        self.assertEqual(will.title, 'Archived Will')
+        self.assertEqual(will.content, {'body': 'initial'})
+        self.assertEqual(will.status, Will.Status.ARCHIVED)
+
+    def test_archived_will_cannot_be_deleted(self):
+        owner = self.active_user(email='owner_archived_delete@example.com')
+        will = Will.objects.create(owner=owner, title='Archived Will', content={'body': 'initial'}, status=Will.Status.ARCHIVED)
+
+        response = self.client.delete(reverse('wills:will-detail', args=[will.pk]), **self.auth_headers(owner))
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Will.objects.filter(pk=will.pk, status=Will.Status.ARCHIVED).exists())
 
     def test_owner_can_delete_draft_will_and_generates_audit_event(self):
         owner = self.active_user(email='owner_del_draft@example.com')

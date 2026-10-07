@@ -34,6 +34,10 @@ class IsTestator(HasRole):
     allowed_roles = (User.Role.OWNER,)
 
 
+class CanManageOwnWills(HasRole):
+    allowed_roles = (User.Role.OWNER, User.Role.MEMBER)
+
+
 class IsAdministrator(HasRole):
     allowed_roles = (User.Role.ADMINISTRATOR,)
 
@@ -55,6 +59,11 @@ class IsOwner(BasePermission):
         for owner_field in ('owner', 'user', 'inviter', 'created_by'):
             if hasattr(obj, owner_field):
                 return getattr(obj, owner_field) == request.user
+
+        if hasattr(obj, 'will'):
+            will_owner = getattr(getattr(obj, 'will'), 'owner', None)
+            if will_owner == request.user:
+                return True
 
         return False
 

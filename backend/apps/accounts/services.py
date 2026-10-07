@@ -70,8 +70,8 @@ def send_password_reset(user):
     )
 
 
-def send_invitation_email(invitation):
-    accept_url = f'{settings.FRONTEND_BASE_URL}/accept-invitation?token={invitation.token}'
+def send_invitation_email(invitation, raw_token):
+    accept_url = f'{settings.FRONTEND_BASE_URL}/accept-invitation?token={raw_token}'
     role_display = invitation.get_role_display()
     send_mail(
         f'You have been invited as a {role_display} on WillChain SL',

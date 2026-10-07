@@ -4,36 +4,104 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import {
+  Activity,
+  ArrowUpRight,
+  Bell,
+  Check,
   CheckCircle2,
-  CircleUserRound,
-  Copy,
+  ChevronRight,
+  Download,
+  FilePlus2,
   Gavel,
-  LogOut,
+  KeyRound,
+  LockKeyhole,
   Mail,
   Plus,
-  Scale,
   ShieldCheck,
   UserCheck,
+  UserRound,
   UserPlus,
   Users,
+  Zap,
 } from "lucide-react";
 
+import { DashboardShell } from "@/components/layout/dashboard-shell";
+import { getMyBeneficiaryRelationships } from "@/services/beneficiary-service";
 import { useAuth } from "@/lib/auth-context";
+import { getMyActivity } from "@/services/dashboard-service";
 import { createWill, finalizeWill, getInvitations, getProfile, getWills, sendInvitation, updateWill } from "@/services/auth-service";
-import type { Invitation, InvitationRole, User } from "@/types/auth";
+import type { DashboardActivity } from "@/types/dashboard";
+import type { BeneficiaryRelationship, BeneficiarySelfRelationship } from "@/types/beneficiaries";
+import type { Invitation, InvitationRole, User, UserRole } from "@/types/auth";
 import type { Will } from "@/types/wills";
-import { ThemeToggle } from "@/components/common/theme-provider";
 
 const API_ORIGIN = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1").replace(/\/api\/v1\/?$/, "");
 
 function avatarUrl(url: string | null | undefined) {
   if (!url) return "";
-  return url.startsWith("http") ? url : `${API_ORIGIN}${url}`;
+  return /^https?:\/\//i.test(url) ? url : `${API_ORIGIN}${url}`;
 }
+
+function BeneficiaryRelationshipList({ relationships, loading }: { relationships: BeneficiarySelfRelationship[]; loading: boolean }) {
+  return (
+    <div className="dashboard-relationship-list">
+      <h3>Active relationships</h3>
+      {loading ? <p>Loading your relationship records...</p> : relationships.length === 0 ? <p>No active beneficiary relationships are linked to this account.</p> : (
+        <ul>
+          {relationships.map((relationship) => (
+            <li key={relationship.id}>
+              <span><strong>{relationship.full_name || relationship.recipient_email}</strong><small>{relationship.relationship_type} · Active</small></span>
+              <CheckCircle2 size={16} aria-label="Active relationship" />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+const roleCapabilities: Record<UserRole, Array<{ title: string; description: string; href: string }>> = {
+  OWNER: [
+    { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
+    { title: "Create Will", description: "Draft your digital will", href: "/dashboard/wills" },
+    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
+    { title: "Manage Relationships", description: "Manage people linked to your wills", href: "/dashboard/wills" },
+  ],
+  MEMBER: [
+    { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
+    { title: "Create Will", description: "Manage your own digital will", href: "/dashboard/wills" },
+    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
+    { title: "Manage Relationships", description: "Manage relationships on your own wills", href: "/dashboard/wills" },
+  ],
+  BENEFICIARY: [
+    { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
+    { title: "View Relationships", description: "Review active beneficiary relationships", href: "/dashboard#role-workspace" },
+    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
+    { title: "Private Access", description: "No access to another person's will", href: "/dashboard#security" },
+  ],
+  WITNESS: [
+    { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
+    { title: "Verification", description: "Check your email verification status", href: "/dashboard#verification" },
+    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
+    { title: "Attestation", description: "Requests appear when assigned", href: "/dashboard#role-workspace" },
+  ],
+  LAWYER_VERIFIER: [
+    { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
+    { title: "Verification", description: "Review assigned verification work", href: "/dashboard#role-workspace" },
+    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
+    { title: "Private Access", description: "Will content remains owner-private", href: "/dashboard#security" },
+  ],
+  ADMINISTRATOR: [
+    { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
+    { title: "Verification", description: "Check your email verification status", href: "/dashboard#verification" },
+    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
+    { title: "Security", description: "Review account security settings", href: "/dashboard#security" },
+  ],
+};
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { user, signOut, busy, initialLoading } = useAuth();
+  const { user, initialLoading } = useAuth();
   const [profileUser, setProfileUser] = useState<User | null>(user);
 
   // Invitations state for Testators
@@ -56,8 +124,14 @@ export default function DashboardPage() {
   const [inviteError, setInviteError] = useState("");
   const [inviteSuccess, setInviteSuccess] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
-  const [copiedToken, setCopiedToken] = useState("");
   const [wills, setWills] = useState<Will[]>([]);
+  const [beneficiaryRelationships, setBeneficiaryRelationships] = useState<BeneficiarySelfRelationship[]>([]);
+  const [loadingRelationships, setLoadingRelationships] = useState(false);
+  const [activity, setActivity] = useState<DashboardActivity[]>([]);
+  const [loadingActivity, setLoadingActivity] = useState(true);
+  const [showAllActivity, setShowAllActivity] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportMessage, setExportMessage] = useState("");
   const [willTitle, setWillTitle] = useState("");
   const [willBody, setWillBody] = useState("");
   const [editingWillId, setEditingWillId] = useState<number | null>(null);
@@ -75,12 +149,38 @@ export default function DashboardPage() {
     setProfileUser(user);
     getProfile().then(({ data }) => {
       setProfileUser(data);
-      if (data.role === "OWNER") {
-        loadInvitations();
+      if (data.role === "OWNER" || data.role === "MEMBER") {
         loadWills();
       }
+      if (data.role === "OWNER") loadInvitations();
+      if (data.role === "MEMBER" || data.role === "BENEFICIARY") loadBeneficiaryRelationships();
+      loadActivity();
     }).catch(() => setProfileUser(user));
   }, [user]);
+
+  async function loadActivity() {
+    setLoadingActivity(true);
+    try {
+      const response = await getMyActivity();
+      setActivity(response.data);
+    } catch {
+      setActivity([]);
+    } finally {
+      setLoadingActivity(false);
+    }
+  }
+
+  async function loadBeneficiaryRelationships() {
+    setLoadingRelationships(true);
+    try {
+      const response = await getMyBeneficiaryRelationships();
+      setBeneficiaryRelationships(response.data);
+    } catch {
+      setBeneficiaryRelationships([]);
+    } finally {
+      setLoadingRelationships(false);
+    }
+  }
 
   async function loadInvitations() {
     setLoadingInvitations(true);
@@ -173,101 +273,103 @@ export default function DashboardPage() {
     }
   }
 
-  function copyInviteLink(token?: string) {
-    if (!token) return;
-    const url = `${window.location.origin}/accept-invitation?token=${token}`;
-    navigator.clipboard.writeText(url);
-    setCopiedToken(token);
-    setTimeout(() => setCopiedToken(""), 2500);
-  }
-
-  async function exit() {
-    await signOut();
-    router.push("/login");
+  async function downloadAccountData() {
+    setExportBusy(true);
+    setExportMessage("");
+    try {
+      const profileResponse = await getProfile();
+      const isWillOwner = profileResponse.data.role === "OWNER" || profileResponse.data.role === "MEMBER";
+      const hasRelationships = profileResponse.data.role === "MEMBER" || profileResponse.data.role === "BENEFICIARY";
+      const [willResponse, relationshipResponse, activityResponse] = await Promise.all([
+        isWillOwner ? getWills() : Promise.resolve({ data: [] as Will[] }),
+        hasRelationships ? getMyBeneficiaryRelationships() : Promise.resolve({ data: [] as BeneficiarySelfRelationship[] }),
+        getMyActivity(),
+      ]);
+      const contents = JSON.stringify({
+        exported_at: new Date().toISOString(),
+        profile: profileResponse.data,
+        wills: willResponse.data,
+        beneficiary_relationships: relationshipResponse.data,
+        activity: activityResponse.data,
+      }, null, 2);
+      const objectUrl = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+      const downloadLink = document.createElement("a");
+      downloadLink.href = objectUrl;
+      downloadLink.download = `willchain-account-data-${new Date().toISOString().slice(0, 10)}.json`;
+      downloadLink.click();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      setExportMessage("Your account data download has started.");
+    } catch (err) {
+      setExportMessage(err instanceof Error ? err.message : "Unable to export account data.");
+    } finally {
+      setExportBusy(false);
+    }
   }
 
   const roleTitleMap: Record<string, string> = {
     OWNER: "Will Owner / Testator",
+    MEMBER: "WillChain Member",
     WITNESS: "Designated Witness",
     BENEFICIARY: "Designated Beneficiary",
     LAWYER_VERIFIER: "Authorized Legal Verifier",
     ADMINISTRATOR: "System Administrator",
   };
+  const visibleActivity = showAllActivity ? activity : activity.slice(0, 5);
+  const capabilities = roleCapabilities[profileUser?.role ?? "MEMBER"];
 
   return (
-    <main className="dashboard-page min-h-screen">
-      <header className="dashboard-header">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-10 lg:px-16">
-          <div className="dashboard-brand">
-            <span className="dashboard-brand-avatar">
-              {avatarUrl(profileUser?.avatar) ? (
-                <img src={avatarUrl(profileUser?.avatar)} alt="Profile" />
-              ) : (
-                <ShieldCheck size={17} />
-              )}
-            </span>
-            WILLCHAIN SL
+    <DashboardShell profileUser={profileUser}>
+      <div className="dashboard-page">
+      <section className="dashboard-overview">
+        <div className="dashboard-welcome-banner">
+          <div className="dashboard-welcome-copy">
+            <p className="dashboard-welcome-role">{roleTitleMap[profileUser?.role ?? ""] ?? "Protected Workspace"}</p>
+            <h1 className="dashboard-welcome-title">Welcome back, {profileUser?.first_name || "WillChain member"}</h1>
+            <p>Your digital will, your legacy, in your control.</p>
+            <div className="dashboard-welcome-badges">
+              <span><CheckCircle2 size={13} /> Role: {profileUser?.role ?? "Loading"}</span>
+              <span><CheckCircle2 size={13} /> Account: {profileUser?.account_status ?? "Loading"}</span>
+              <span><ShieldCheck size={13} /> Email: {profileUser?.email_verified ? "Verified" : "Pending"}</span>
+            </div>
           </div>
-          <div className="dashboard-header-actions">
-            <ThemeToggle />
-            <Link className="dashboard-profile-link" href="/profile">
-              <CircleUserRound size={17} /> Profile
-            </Link>
-            <button
-              className="dashboard-signout inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-bold"
-              disabled={busy}
-              onClick={exit}
-            >
-              <LogOut size={16} />
-              {busy ? "Signing out..." : "Sign out"}
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <section className="mx-auto max-w-7xl px-5 py-12 sm:px-10 lg:px-16">
-        <div className="flex flex-wrap items-end justify-between gap-5">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-wider text-[#aa7d34]">
-              {roleTitleMap[profileUser?.role ?? ""] ?? "Protected Workspace"}
-            </p>
-            <h1 className="mt-3 text-4xl font-semibold sm:text-5xl">
-              {profileUser ? `Welcome, ${profileUser.first_name}.` : "Loading workspace..."}
-            </h1>
-            <p className="mt-3 text-[#60776e]">
-              Authenticated as <span className="font-semibold text-[#17372f]">{profileUser?.email}</span> with active court-grade credentials.
-            </p>
-          </div>
+          <blockquote className="dashboard-welcome-quote">“A well-prepared will isn’t just about what you leave behind—it’s about peace of mind for those you love.”</blockquote>
         </div>
 
-        <div className="mt-10 grid gap-4 md:grid-cols-3">
+        <div className="dashboard-status-grid">
           <div className="rounded-xl border border-[#dce4df] bg-[#fffdf8] p-6 shadow-sm">
-            <p className="text-xs font-bold uppercase text-[#809189]">Role</p>
+            <p className="dashboard-status-label"><span className="dashboard-status-icon"><UserRound size={18} /></span>Role</p>
             <p className="mt-3 text-xl font-semibold text-[#17372f]">
               {profileUser?.role ? roleTitleMap[profileUser.role] : "Loading..."}
             </p>
           </div>
           <div className="rounded-xl border border-[#dce4df] bg-[#fffdf8] p-6 shadow-sm">
-            <p className="text-xs font-bold uppercase text-[#809189]">Account status</p>
+            <p className="dashboard-status-label"><span className="dashboard-status-icon green"><CheckCircle2 size={18} /></span>Account status</p>
             <p className="mt-3 text-xl font-semibold text-[#176b5b]">
               {profileUser?.account_status ?? "Unknown"}
             </p>
           </div>
-          <div className="rounded-xl border border-[#dce4df] bg-[#fffdf8] p-6 shadow-sm">
-            <p className="text-xs font-bold uppercase text-[#809189]">Identity Verification</p>
+          <div id="verification" className="rounded-xl border border-[#dce4df] bg-[#fffdf8] p-6 shadow-sm">
+            <p className="dashboard-status-label"><span className="dashboard-status-icon purple"><ShieldCheck size={18} /></span>Email verification</p>
             <p className="mt-3 text-base font-medium text-[#17372f]">
-              {profileUser?.email_verified ? "Email & Identity Verified" : "Pending Verification"}
+              {profileUser?.email_verified ? "Verified" : "Pending"}
             </p>
+          </div>
+          <div className="rounded-xl border border-[#dce4df] bg-[#fffdf8] p-6 shadow-sm">
+            <p className="dashboard-status-label"><span className="dashboard-status-icon cyan"><LockKeyhole size={18} /></span>Private access</p>
+            <p className="mt-3 text-base font-medium text-[#17372f]">Role-scoped</p>
+            <p className="mt-1 text-xs text-[#60776e]">Your available workspace follows your account permissions.</p>
           </div>
         </div>
 
+        <div className="dashboard-template-grid">
+          <div className="dashboard-template-primary">
         {/* --- ROLE-SPECIFIC WORKSPACE CONTENT --- */}
         {profileUser?.role === "OWNER" && (
-          <div className="mt-12">
+          <div className="dashboard-owner-workspace">
             <div className="rounded-xl border border-[#dce4df] bg-white p-6 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <h2 className="text-2xl font-semibold text-[#17372f]">My Wills</h2>
+                  <h2 className="text-2xl font-semibold text-[#17372f]">My Will</h2>
                   <p className="mt-1 text-sm text-[#60776e]">Draft, review, and finalize your private digital will.</p>
                 </div>
                 <button type="button" onClick={() => router.push("/dashboard/wills")} className="inline-flex items-center gap-2 rounded-lg bg-[#176b5b] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#0f5548]">
@@ -277,7 +379,7 @@ export default function DashboardPage() {
 
               {willError && <div className="mt-4 rounded-lg bg-[#fff3ed] p-3 text-sm text-[#8c422c]" role="alert">{willError}</div>}
 
-              {(editingWillId !== null || (wills.length === 0 && !willBusy)) && (
+              {editingWillId !== null && (
                 <form className="mt-6 grid gap-4 border-t border-[#edf1ee] pt-6" onSubmit={saveWill}>
                   <label className="text-sm font-semibold text-[#17372f]">
                     Will title
@@ -294,10 +396,15 @@ export default function DashboardPage() {
                 </form>
               )}
 
-              <div className="mt-6 grid gap-3">
-                {wills.length === 0 ? (
-                  <p className="rounded-lg bg-[#fafaf8] p-5 text-sm text-[#809189]">No wills yet. Create your first draft to begin.</p>
-                ) : wills.map((will) => (
+              {wills.length === 0 ? (
+                <div className="dashboard-will-empty">
+                  <span className="dashboard-will-empty-icon"><FilePlus2 size={23} /></span>
+                  <strong>No Will created yet</strong>
+                  <p>Start creating your digital will to secure your legacy and protect your loved ones.</p>
+                  <Link href="/dashboard/wills" className="dashboard-create-will">Create My Will</Link>
+                </div>
+              ) : <div className="mt-6 grid gap-3">
+                {wills.map((will) => (
                   <div key={will.id} className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-[#edf1ee] p-4">
                     <div>
                       <p className="font-semibold text-[#17372f]">{will.title}</p>
@@ -310,14 +417,15 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 ))}
-              </div>
+                <Link href="/dashboard/wills" className="dashboard-view-all">View All <ArrowUpRight size={12} /></Link>
+              </div>}
             </div>
 
-            <div className="flex items-center justify-between">
+            <div id="people" className="dashboard-people-heading">
               <div>
                 <h2 className="text-2xl font-semibold text-[#17372f]">Estate Collaborators & Invitations</h2>
                 <p className="mt-1 text-sm text-[#60776e]">
-                  Witnesses, Beneficiaries, and Legal Verifiers are invited directly by you to collaborate on your digital estate.
+                  Invite witnesses and legal verifiers here. Manage beneficiary onboarding from a draft will.
                 </p>
               </div>
               <button
@@ -338,7 +446,7 @@ export default function DashboardPage() {
                   <UserPlus className="mx-auto text-[#809189]" size={36} />
                   <p className="mt-3 font-semibold text-[#17372f]">No collaborators invited yet</p>
                   <p className="mt-1 text-xs text-[#809189]">
-                    Invite your Witnesses, Beneficiaries, or Lawyer so their secure identities are ready for your will.
+                    Invite witnesses and legal verifiers here, or manage beneficiaries from a draft will.
                   </p>
                 </div>
               ) : (
@@ -361,15 +469,7 @@ export default function DashboardPage() {
                           <Mail size={12} className="inline mr-1" /> {inv.email} · Invited on {new Date(inv.created_at).toLocaleDateString()}
                         </p>
                       </div>
-                      {inv.status === "PENDING" && inv.token && (
-                        <button
-                          type="button"
-                          onClick={() => copyInviteLink(inv.token)}
-                          className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-[#dce4df] px-3 py-1.5 text-xs font-semibold text-[#176b5b] hover:bg-[#f5f7f6] sm:mt-0"
-                        >
-                          <Copy size={13} /> {copiedToken === inv.token ? "Copied!" : "Copy acceptance link"}
-                        </button>
-                      )}
+                      {inv.status === "PENDING" && <span className="mt-2 text-xs text-[#809189] sm:mt-0">Invitation sent by email</span>}
                     </div>
                   ))}
                 </div>
@@ -379,7 +479,7 @@ export default function DashboardPage() {
         )}
 
         {profileUser?.role === "LAWYER_VERIFIER" && (
-          <div className="mt-10 rounded-xl border border-[#dce4df] bg-white p-8 shadow-sm">
+          <div id="role-workspace" className="mt-10 rounded-xl border border-[#dce4df] bg-white p-8 shadow-sm">
             <div className="flex items-center gap-3">
               <Gavel className="text-[#176b5b]" size={28} />
               <div>
@@ -393,7 +493,7 @@ export default function DashboardPage() {
         )}
 
         {profileUser?.role === "WITNESS" && (
-          <div className="mt-10 rounded-xl border border-[#dce4df] bg-white p-8 shadow-sm">
+          <div id="role-workspace" className="mt-10 rounded-xl border border-[#dce4df] bg-white p-8 shadow-sm">
             <div className="flex items-center gap-3">
               <UserCheck className="text-[#176b5b]" size={28} />
               <div>
@@ -407,21 +507,102 @@ export default function DashboardPage() {
         )}
 
         {profileUser?.role === "BENEFICIARY" && (
-          <div className="mt-10 rounded-xl border border-[#dce4df] bg-white p-8 shadow-sm">
+          <div id="role-workspace" className="mt-10 rounded-xl border border-[#dce4df] bg-white p-8 shadow-sm">
             <div className="flex items-center gap-3">
               <Users className="text-[#176b5b]" size={28} />
               <div>
-                <h2 className="text-xl font-semibold text-[#17372f]">Beneficiary Registry Workspace</h2>
-                <p className="text-sm text-[#60776e]">
-                  Your identity is recorded for controlled future allocation release following legal probate verification in Module 6.
-                </p>
+                <h2 className="text-xl font-semibold text-[#17372f]">My Beneficiary Relationships</h2>
+                <p className="text-sm text-[#60776e]">Review relationship status only. Beneficiary status does not provide access to private will contents.</p>
               </div>
             </div>
+            <BeneficiaryRelationshipList relationships={beneficiaryRelationships} loading={loadingRelationships} />
           </div>
         )}
 
-        <div className="mt-12 rounded-xl border border-[#c7a86b]/40 bg-[#fffaf0] p-5 text-sm leading-6 text-[#6d572c]">
-          WillChain protects private will information through identity, relationship, explicit permission, and workflow state. No private will contents are exposed without verified authorization.
+        {profileUser?.role === "MEMBER" && (
+          <div id="role-workspace" className="mt-10 rounded-xl border border-[#dce4df] bg-white p-8 shadow-sm">
+            <div className="flex items-center gap-3">
+              <Users className="text-[#176b5b]" size={28} />
+              <div>
+                <h2 className="text-xl font-semibold text-[#17372f]">Member Account</h2>
+                <p className="text-sm text-[#60776e]">
+                  You can manage your own wills and beneficiary relationships. Accepting another person’s invitation does not grant access to their private will.
+                </p>
+                <Link className="mt-3 inline-block text-sm font-bold text-[#176b5b] hover:underline" href="/dashboard/wills">Manage my wills</Link>
+              </div>
+            </div>
+            <BeneficiaryRelationshipList relationships={beneficiaryRelationships} loading={loadingRelationships} />
+          </div>
+        )}
+
+            <section className="dashboard-permissions-card">
+              <h2><ShieldCheck size={16} /> Your Role & Permissions</h2>
+              <div className="dashboard-permission-grid">
+                {capabilities.map((capability) => (
+                  <Link key={capability.title} href={capability.href} className="dashboard-permission-link">
+                    <Check size={13} />
+                    <strong>{capability.title}</strong>
+                    <small>{capability.description}</small>
+                  </Link>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          <div className="dashboard-template-middle">
+            <section className="dashboard-quick-actions">
+              <h2><Zap size={16} /> Quick Actions</h2>
+              <Link href="/profile" className="dashboard-quick-action"><span className="dashboard-quick-icon"><UserRound size={16} /></span><span><strong>Update Profile</strong><small>Manage your personal information</small></span><ChevronRight size={14} /></Link>
+              <Link href="/profile#change-password" className="dashboard-quick-action"><span className="dashboard-quick-icon"><KeyRound size={16} /></span><span><strong>Change Password</strong><small>Keep your account secure</small></span><ChevronRight size={14} /></Link>
+              <Link href="/forgot-password" className="dashboard-quick-action"><span className="dashboard-quick-icon"><LockKeyhole size={16} /></span><span><strong>Password Reset</strong><small>Reset your password if forgotten</small></span><ChevronRight size={14} /></Link>
+              <button type="button" onClick={downloadAccountData} disabled={exportBusy} className="dashboard-quick-action dashboard-download-action"><span className="dashboard-quick-icon"><Download size={16} /></span><span><strong>{exportBusy ? "Preparing Download..." : "Download Your Data"}</strong><small>Export your profile, wills, relationships, and activity</small></span><ChevronRight size={14} /></button>
+              {exportMessage && <p className="dashboard-export-message" role="status">{exportMessage}</p>}
+              <Link href="/dashboard#notifications" className="dashboard-quick-action"><span className="dashboard-quick-icon"><Bell size={16} /></span><span><strong>View Notifications</strong><small>Check account and workflow updates</small></span><ChevronRight size={14} /></Link>
+            </section>
+
+            <section id="notifications" className="dashboard-notification-card">
+              <h2><Bell size={16} /> Notifications</h2>
+              <p className="dashboard-notification-empty">Notifications are not enabled yet. Account activity is available in the Recent Activity panel.</p>
+            </section>
+
+            <section id="security" className="dashboard-security-card">
+              <h2><LockKeyhole size={16} /> Security & Privacy</h2>
+              <p>Your account uses authenticated access and role-scoped permissions. Private will content is not shared through beneficiary relationships.</p>
+              <Link href="/profile">Learn more about account security <ArrowUpRight size={12} /></Link>
+            </section>
+          </div>
+
+          <aside className="dashboard-template-side">
+            <section className="dashboard-profile-card">
+              <div className="dashboard-profile-card-heading"><h2>My Profile</h2><Link href="/profile">View Profile <ArrowUpRight size={12} /></Link></div>
+              <div className="dashboard-profile-summary">
+                <span className="dashboard-profile-avatar">{avatarUrl(profileUser?.avatar) ? <img src={avatarUrl(profileUser?.avatar)} alt="" /> : `${profileUser?.first_name?.[0] ?? "W"}${profileUser?.last_name?.[0] ?? "C"}`}</span>
+                <span><strong>{`${profileUser?.first_name ?? ""} ${profileUser?.last_name ?? ""}`.trim() || "WillChain member"}</strong><small>{roleTitleMap[profileUser?.role ?? ""] ?? "Protected workspace"}</small></span>
+              </div>
+              <div className="dashboard-profile-details">
+                <span><Mail size={13} />{profileUser?.email ?? "Email unavailable"}</span>
+                {profileUser?.phone_number && <span><UserRound size={13} />{profileUser.phone_number}</span>}
+              </div>
+              <div className="dashboard-verified-note"><ShieldCheck size={15} />{profileUser?.email_verified ? "Email verified" : "Email verification pending"}</div>
+            </section>
+
+            <section className="dashboard-activity-card">
+              <div className="dashboard-activity-heading"><h2><Activity size={16} /> Recent Activity</h2>{activity.length > 5 && <button type="button" onClick={() => setShowAllActivity((current) => !current)}>{showAllActivity ? "Show less" : "View all"} <ArrowUpRight size={11} /></button>}</div>
+              {loadingActivity ? <p className="dashboard-activity-empty">Loading recent activity...</p> : visibleActivity.length === 0 ? <p className="dashboard-activity-empty">Your account activity will appear here when events are recorded.</p> : (
+                <div className="dashboard-activity-list">
+                  {visibleActivity.map((item) => (
+                    <div key={item.id} className="dashboard-activity-item"><span className="dashboard-activity-icon"><Activity size={14} /></span><span><strong>{item.event_label}</strong><small>{new Date(item.created_at).toLocaleString()}</small></span></div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="dashboard-legacy-card">
+              <h2>{profileUser?.role === "OWNER" || profileUser?.role === "MEMBER" ? "Your legacy matters" : "Your WillChain workspace"}</h2>
+              <p>{profileUser?.role === "OWNER" || profileUser?.role === "MEMBER" ? "Take the next step in securing your future and protecting what matters most." : "Keep your account details current and review role-specific updates here."}</p>
+              <Link href={profileUser?.role === "OWNER" || profileUser?.role === "MEMBER" ? "/dashboard/wills" : "/profile"}>{profileUser?.role === "OWNER" || profileUser?.role === "MEMBER" ? "Create My Will" : "View My Profile"} <ChevronRight size={13} /></Link>
+            </section>
+          </aside>
         </div>
       </section>
 
@@ -432,7 +613,7 @@ export default function DashboardPage() {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-semibold text-[#17372f]">Invite an Estate Collaborator</h3>
-                <p className="mt-1 text-xs text-[#60776e]">Send an invitation to a Witness, Beneficiary, or Lawyer.</p>
+                <p className="mt-1 text-xs text-[#60776e]">Send an invitation to a Witness or Legal Verifier.</p>
               </div>
               <button
                 type="button"
@@ -455,7 +636,6 @@ export default function DashboardPage() {
                   className="mt-1.5 w-full rounded-lg border border-[#dce4df] bg-white p-2.5 text-sm"
                 >
                   <option value="WITNESS">Witness (To attest and sign your will)</option>
-                  <option value="BENEFICIARY">Beneficiary (Named in your will)</option>
                   <option value="LAWYER_VERIFIER">Lawyer / Legal Verifier (Authorized practitioner)</option>
                 </select>
               </div>
@@ -524,6 +704,7 @@ export default function DashboardPage() {
           </div>
         </div>
       )}
-    </main>
+      </div>
+    </DashboardShell>
   );
 }

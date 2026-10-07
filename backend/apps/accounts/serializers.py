@@ -68,7 +68,8 @@ class RegistrationSerializer(serializers.Serializer):
     def create(self, validated_data):
         validated_data.pop('password_confirmation')
         password = validated_data.pop('password')
-        return User.objects.create_user(password=password, **validated_data)
+        role = self.context.get('registration_role', User.Role.OWNER)
+        return User.objects.create_user(password=password, role=role, **validated_data)
 
 
 class LoginSerializer(serializers.Serializer):
@@ -146,13 +147,12 @@ class InvitationSerializer(serializers.ModelSerializer):
             'message',
             'expires_at',
             'created_at',
-            'token',
         )
-        read_only_fields = ('id', 'inviter_email', 'status', 'expires_at', 'created_at', 'token')
+        read_only_fields = ('id', 'inviter_email', 'status', 'expires_at', 'created_at')
 
     def validate_role(self, value):
-        if value not in (Invitation.RoleChoices.WITNESS, Invitation.RoleChoices.BENEFICIARY, Invitation.RoleChoices.LAWYER_VERIFIER):
-            raise serializers.ValidationError('Role must be WITNESS, BENEFICIARY, or LAWYER_VERIFIER.')
+        if value not in (Invitation.RoleChoices.WITNESS, Invitation.RoleChoices.LAWYER_VERIFIER):
+            raise serializers.ValidationError('Use the will beneficiary invitation workflow for beneficiaries.')
         return value
 
     def validate(self, attrs):
@@ -160,8 +160,6 @@ class InvitationSerializer(serializers.ModelSerializer):
         email = attrs['email'].lower()
         if request and request.user.email.lower() == email:
             raise serializers.ValidationError({'email': 'You cannot invite yourself.'})
-        if User.objects.filter(email__iexact=email).exists():
-            raise serializers.ValidationError({'email': 'A user with this email is already registered.'})
         if Invitation.objects.filter(email__iexact=email, status=Invitation.Status.PENDING).exists():
             raise serializers.ValidationError({'email': 'A pending invitation already exists for this email.'})
         attrs['email'] = email
@@ -169,28 +167,10 @@ class InvitationSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data['inviter'] = self.context['request'].user
-        return super().create(validated_data)
+        raw_token = Invitation.generate_token()
+        validated_data['token_hash'] = Invitation.hash_token(raw_token)
+        invitation = super().create(validated_data)
+        self.context['raw_invitation_token'] = raw_token
+        return invitation
 
 
-class AcceptInvitationSerializer(serializers.Serializer):
-    token = serializers.CharField()
-    first_name = serializers.CharField(max_length=150, required=False)
-    last_name = serializers.CharField(max_length=150, required=False)
-    phone_number = serializers.CharField(max_length=30, required=False, allow_blank=True)
-    password = serializers.CharField(write_only=True, trim_whitespace=False)
-    password_confirmation = serializers.CharField(write_only=True, trim_whitespace=False)
-
-    def validate(self, attrs):
-        if attrs['password'] != attrs['password_confirmation']:
-            raise serializers.ValidationError({'password_confirmation': 'Passwords do not match.'})
-        try:
-            invitation = Invitation.objects.get(token=attrs['token'])
-        except Invitation.DoesNotExist:
-            raise serializers.ValidationError({'token': 'Invalid invitation token.'})
-
-        if not invitation.is_valid():
-            raise serializers.ValidationError({'token': 'Invitation is expired or no longer pending.'})
-
-        validate_password(attrs['password'])
-        attrs['invitation'] = invitation
-        return attrs

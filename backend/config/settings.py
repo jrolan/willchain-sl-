@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'apps.accounts',
     'apps.audit',
     'apps.wills',
+    'apps.beneficiaries',
 ]
 
 MIDDLEWARE = [
@@ -164,6 +165,7 @@ REST_FRAMEWORK = {
         'anon': '300/hour',
         'user': '2000/hour',
         'auth': '60/minute',
+        'beneficiary_invitation_resend': '5/hour',
     },
 }
 

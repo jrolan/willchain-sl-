@@ -6,9 +6,10 @@ import assert from "node:assert/strict";
 // ---------------------------------------------------------------------------
 
 test("User roles include all approved WillChain SL personas", () => {
-  const allowedRoles = ["OWNER", "WITNESS", "BENEFICIARY", "LAWYER_VERIFIER", "ADMINISTRATOR"];
-  assert.equal(allowedRoles.length, 5);
+  const allowedRoles = ["OWNER", "MEMBER", "WITNESS", "BENEFICIARY", "LAWYER_VERIFIER", "ADMINISTRATOR"];
+  assert.equal(allowedRoles.length, 6);
   assert.ok(allowedRoles.includes("OWNER"));
+  assert.ok(allowedRoles.includes("MEMBER"));
   assert.ok(allowedRoles.includes("WITNESS"));
   assert.ok(allowedRoles.includes("BENEFICIARY"));
   assert.ok(allowedRoles.includes("LAWYER_VERIFIER"));
@@ -24,8 +25,9 @@ test("Account statuses match platform state machine", () => {
 });
 
 test("Invitation roles only permit invited collaborator roles", () => {
-  const invitationRoles = ["WITNESS", "BENEFICIARY", "LAWYER_VERIFIER"];
-  assert.equal(invitationRoles.length, 3);
+  const invitationRoles = ["WITNESS", "LAWYER_VERIFIER"];
+  assert.equal(invitationRoles.length, 2);
+  assert.ok(!invitationRoles.includes("BENEFICIARY"), "Beneficiaries use will-scoped relationship invitations");
   assert.ok(!invitationRoles.includes("OWNER"), "Testators cannot be invited through collaborator invites");
   assert.ok(!invitationRoles.includes("ADMINISTRATOR"), "Administrators cannot be invited through collaborator invites");
 });
@@ -59,7 +61,7 @@ test("Error message normalization handles nested DRF errors and generic fallback
 
 test("InvitationDetail shape matches backend response contract", () => {
   const detail = {
-    email: "invited@example.com",
+    email: "i***@example.com",
     first_name: "Jane",
     last_name: "Doe",
     role: "WITNESS",
@@ -69,7 +71,7 @@ test("InvitationDetail shape matches backend response contract", () => {
 
   assert.equal(typeof detail.email, "string");
   assert.ok(detail.email.includes("@"));
-  assert.ok(["WITNESS", "BENEFICIARY", "LAWYER_VERIFIER"].includes(detail.role));
+  assert.ok(["WITNESS", "LAWYER_VERIFIER"].includes(detail.role));
   assert.equal(detail.role_display.length > 0, true);
   assert.equal(detail.inviter_name.length > 0, true);
 });

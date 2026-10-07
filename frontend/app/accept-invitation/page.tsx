@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
-import { CheckCircle2, Gavel, Scale, ShieldCheck, UserCheck, Users } from "lucide-react";
+import { Gavel, ShieldCheck, UserCheck } from "lucide-react";
 
 import { AuthShell, Field } from "@/components/auth/auth-shell";
 import { useAuth } from "@/lib/auth-context";
@@ -12,15 +12,18 @@ import type { InvitationDetail } from "@/types/auth";
 
 export default function AcceptInvitationPage() {
   const router = useRouter();
-  const { setUser } = useAuth();
+  const { user, signIn, signOut, initialLoading, busy: authBusy } = useAuth();
 
   const [token, setToken] = useState("");
   const [loading, setLoading] = useState(true);
   const [invitation, setInvitation] = useState<InvitationDetail | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<"register" | "login">("register");
 
   const [form, setForm] = useState({
+    email: "",
     first_name: "",
     last_name: "",
     phone_number: "",
@@ -55,23 +58,53 @@ export default function AcceptInvitationPage() {
       });
   }, []);
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  async function register(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    setNotice("");
     setBusy(true);
     try {
       const response = await acceptInvitation({
         token,
+        email: form.email,
         first_name: form.first_name,
         last_name: form.last_name,
         phone_number: form.phone_number,
         password: form.password,
         password_confirmation: form.password_confirmation,
       });
-      setUser(response.data.user);
-      router.push("/dashboard");
+      setNotice(response.message);
     } catch (submitErr) {
       setError(submitErr instanceof Error ? submitErr.message : "Failed to complete registration.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function signInToAccept(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      await signIn(form.email, form.password);
+      setNotice("Signed in. Review and accept the invitation below.");
+    } catch (submitErr) {
+      setError(submitErr instanceof Error ? submitErr.message : "Could not sign in.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function acceptForSignedInUser() {
+    setError("");
+    setNotice("");
+    setBusy(true);
+    try {
+      const response = await acceptInvitation({ token });
+      setNotice(response.message);
+      router.push("/dashboard");
+    } catch (submitErr) {
+      setError(submitErr instanceof Error ? submitErr.message : "Could not accept the invitation.");
     } finally {
       setBusy(false);
     }
@@ -83,8 +116,6 @@ export default function AcceptInvitationPage() {
         return <Gavel size={22} className="text-[#176b5b]" />;
       case "WITNESS":
         return <UserCheck size={22} className="text-[#176b5b]" />;
-      case "BENEFICIARY":
-        return <Users size={22} className="text-[#176b5b]" />;
       default:
         return <ShieldCheck size={22} className="text-[#176b5b]" />;
     }
@@ -126,7 +157,7 @@ export default function AcceptInvitationPage() {
     <AuthShell
       eyebrow="Estate Collaborator Invitation"
       title="Join WillChain SL."
-      description={`You have been invited by ${invitation?.inviter_name} to join as an authorized ${invitation?.role_display}. Complete your secure credentials below to activate your account.`}
+      description={`You have been invited by ${invitation?.inviter_name} as an authorized ${invitation?.role_display}. Your invitation does not grant access to a will.`}
     >
       <div className="mb-6 flex items-center gap-3 rounded-xl border border-[#c7a86b]/40 bg-[#fffaf0] p-4">
         {getRoleIcon(invitation?.role)}
@@ -141,37 +172,39 @@ export default function AcceptInvitationPage() {
           {error}
         </div>
       )}
+      {notice && <p role="status" className="mb-5 rounded-lg border border-[#b8d9ca] bg-[#effaf4] px-4 py-3 text-sm leading-6 text-[#176b5b]">{notice}</p>}
+      {invitation && <p className="mb-5 text-sm text-[#60776e]">Invitation sent to {invitation.email}.</p>}
 
-      <form className="register-form" onSubmit={submit}>
-        <div className="register-row">
-          <Field label="First name" required value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
-          <Field label="Last name" required value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
+      {user ? (
+        <div className="grid gap-4">
+          <p className="text-sm text-[#60776e]">Signed in as {user.email}. Accepting this invitation will not change your account role or grant access to any will.</p>
+          <div className="flex flex-wrap gap-3">
+            <button type="button" disabled={busy || initialLoading || authBusy} onClick={acceptForSignedInUser} className="rounded-lg bg-[#176b5b] px-5 py-3 text-sm font-bold text-white disabled:opacity-60">{busy ? "Accepting..." : "Accept invitation"}</button>
+            <button type="button" disabled={busy} onClick={() => signOut()} className="rounded-lg border border-[#cbd8d1] px-5 py-3 text-sm font-bold text-[#17372f]">Switch account</button>
+          </div>
         </div>
-        <div className="register-row">
-          <Field label="Email address" disabled value={invitation?.email ?? ""} />
-          <Field label="Phone number" type="tel" placeholder="Optional" value={form.phone_number} onChange={(e) => setForm({ ...form, phone_number: e.target.value })} />
-        </div>
-        <div className="register-row">
-          <Field label="Password" required type="password" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-          <Field label="Confirm password" required type="password" autoComplete="new-password" value={form.password_confirmation} onChange={(e) => setForm({ ...form, password_confirmation: e.target.value })} />
-        </div>
-        <div className="flex items-center justify-between gap-4 pt-2">
-          <p className="m-0 max-w-xs text-xs leading-5 text-[#809189]">
-            Accepting this invitation registers your role and enables court-grade authentication.
-          </p>
-          <button
-            className="inline-flex h-12 shrink-0 items-center justify-center rounded-lg bg-[#176b5b] px-5 text-sm font-bold text-white shadow-[0_8px_20px_rgba(23,107,91,0.18)] transition hover:bg-[#0f5548] disabled:opacity-60"
-            disabled={busy}
-            type="submit"
-          >
-            {busy ? "Activating..." : "Accept & Enter Workspace"}
-          </button>
-        </div>
-      </form>
-
-      <div className="mt-8 border-t border-[#dce4df] pt-6 text-sm text-[#60776e]">
-        Already have an account? <Link className="font-bold text-[#176b5b] hover:underline" href="/login">Sign in</Link>
-      </div>
+      ) : notice ? (
+        <p className="text-sm text-[#60776e]">After verifying your email, sign in and reopen this invitation link to accept it. <Link className="font-bold text-[#176b5b]" href="/login">Sign in</Link></p>
+      ) : (
+        <>
+          <div className="mb-6 flex gap-4 border-b border-[#dce4df] pb-3 text-sm">
+            <button type="button" onClick={() => { setMode("register"); setError(""); }} className={mode === "register" ? "font-bold text-[#176b5b]" : "text-[#60776e]"}>Create account</button>
+            <button type="button" onClick={() => { setMode("login"); setError(""); }} className={mode === "login" ? "font-bold text-[#176b5b]" : "text-[#60776e]"}>I have an account</button>
+          </div>
+          <form className="register-form" onSubmit={mode === "register" ? register : signInToAccept}>
+            <Field label="Email address" required type="email" autoComplete="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+            {mode === "register" && <div className="register-row">
+              <Field label="First name" required value={form.first_name} onChange={(event) => setForm({ ...form, first_name: event.target.value })} />
+              <Field label="Last name" required value={form.last_name} onChange={(event) => setForm({ ...form, last_name: event.target.value })} />
+            </div>}
+            {mode === "register" && <Field label="Phone number" type="tel" placeholder="Optional" value={form.phone_number} onChange={(event) => setForm({ ...form, phone_number: event.target.value })} />}
+            <Field label="Password" required type="password" autoComplete={mode === "register" ? "new-password" : "current-password"} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} />
+            {mode === "register" && <Field label="Confirm password" required type="password" autoComplete="new-password" value={form.password_confirmation} onChange={(event) => setForm({ ...form, password_confirmation: event.target.value })} />}
+            {mode === "register" && <p className="m-0 text-xs leading-5 text-[#809189]">Your account remains pending until you verify your email. Registration does not accept this invitation.</p>}
+            <button className="inline-flex h-12 w-fit items-center justify-center rounded-lg bg-[#176b5b] px-5 text-sm font-bold text-white disabled:opacity-60" disabled={busy || initialLoading || authBusy} type="submit">{busy || authBusy ? "Please wait..." : mode === "register" ? "Create account and verify email" : "Sign in"}</button>
+          </form>
+        </>
+      )}
     </AuthShell>
   );
 }

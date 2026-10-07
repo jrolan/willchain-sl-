@@ -160,7 +160,7 @@ export default function ProfilePage() {
               <div className="profile-form-actions"><p>Changes are recorded with your account activity.</p><button type="submit">Save profile</button></div>
             </form></div>
 
-            <div className="profile-card profile-form-card"><div className="card-heading"><div className="heading-icon"><KeyRound size={18} /></div><div><h2>Change password</h2><p>Choose a strong password to keep your digital estate protected.</p></div></div>
+            <div id="change-password" className="profile-card profile-form-card"><div className="card-heading"><div className="heading-icon"><KeyRound size={18} /></div><div><h2>Change password</h2><p>Choose a strong password to keep your digital estate protected.</p></div></div>
             {passwordError && <div className="profile-alert mb-4">{passwordError}</div>}
             {passwordMessage && <div className="profile-success mb-4" role="status">{passwordMessage}</div>}
             <form className="profile-form" onSubmit={submitPassword}>

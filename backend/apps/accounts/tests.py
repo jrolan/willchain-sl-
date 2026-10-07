@@ -1,5 +1,6 @@
 import io
 from datetime import timedelta
+from urllib.parse import parse_qs, urlsplit
 from PIL import Image
 
 from django.contrib.auth.tokens import default_token_generator
@@ -451,14 +452,18 @@ class AuthenticationApiTests(APITestCase):
 		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 		self.assertEqual(response.data['data']['email'], 'witness@example.com')
 		self.assertEqual(response.data['data']['role'], 'WITNESS')
+		self.assertNotIn('token', response.data['data'])
 
 		invitation = Invitation.objects.get(email='witness@example.com')
 		self.assertEqual(invitation.inviter, testator)
 		self.assertEqual(len(mail.outbox), 1)
 		self.assertIn('Witness', mail.outbox[0].subject)
+		sent_url = next(line for line in mail.outbox[0].body.splitlines() if '/accept-invitation?token=' in line)
+		sent_token = parse_qs(urlsplit(sent_url).query)['token'][0]
+		self.assertEqual(invitation.token_hash, Invitation.hash_token(sent_token))
 		self.assertTrue(AuditEvent.objects.filter(event_type=AuditEvent.EventType.INVITATION_SENT).exists())
 
-	def test_testator_can_invite_lawyer_and_beneficiary(self):
+	def test_testator_can_invite_lawyer_but_uses_dedicated_beneficiary_flow(self):
 		self.active_user()
 		login_response = self.client.post(
 			reverse('accounts:login'),
@@ -481,28 +486,33 @@ class AuthenticationApiTests(APITestCase):
 			{'email': 'beneficiary@example.com', 'role': Invitation.RoleChoices.BENEFICIARY},
 			format='json',
 		)
-		self.assertEqual(resp2.status_code, status.HTTP_201_CREATED)
+		self.assertEqual(resp2.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertFalse(Invitation.objects.filter(email='beneficiary@example.com').exists())
 
-	def test_invitee_can_accept_invitation_and_gain_role(self):
+	def test_invitee_must_verify_and_sign_in_before_accepting_invitation(self):
 		testator = self.active_user()
+		raw_token = Invitation.generate_token()
 		invitation = Invitation.objects.create(
 			inviter=testator,
 			email='lawyer.sl@example.com',
 			first_name='Alpha',
 			last_name='Kargbo',
 			role=Invitation.RoleChoices.LAWYER_VERIFIER,
+			token_hash=Invitation.hash_token(raw_token),
 		)
 
 		# Query invitation details via GET
-		get_resp = self.client.get(f"{reverse('accounts:accept-invitation')}?token={invitation.token}")
+		get_resp = self.client.get(f"{reverse('accounts:accept-invitation')}?token={raw_token}")
 		self.assertEqual(get_resp.status_code, status.HTTP_200_OK)
 		self.assertEqual(get_resp.data['data']['role'], 'LAWYER_VERIFIER')
+		self.assertEqual(get_resp.data['data']['email'], 'l***@example.com')
+		self.assertNotIn('token', get_resp.data['data'])
 
-		# Accept invitation and create password
-		post_resp = self.client.post(
+		registration_response = self.client.post(
 			reverse('accounts:accept-invitation'),
 			{
-				'token': invitation.token,
+				'token': raw_token,
+				'email': 'lawyer.sl@example.com',
 				'first_name': 'Alpha',
 				'last_name': 'Kargbo',
 				'phone_number': '+23276000111',
@@ -511,21 +521,69 @@ class AuthenticationApiTests(APITestCase):
 			},
 			format='json',
 		)
-		self.assertEqual(post_resp.status_code, status.HTTP_201_CREATED)
-		self.assertIn('access', post_resp.data['data'])
+		self.assertEqual(registration_response.status_code, status.HTTP_201_CREATED)
+		self.assertNotIn('access', registration_response.data['data'])
+		self.assertEqual(registration_response.data['data']['account_status'], User.AccountStatus.PENDING_VERIFICATION)
 
 		# Verify created user
 		new_user = User.objects.get(email='lawyer.sl@example.com')
 		self.assertEqual(new_user.role, User.Role.LAWYER_VERIFIER)
-		self.assertEqual(new_user.account_status, User.AccountStatus.ACTIVE)
-		self.assertTrue(new_user.email_verified)
-		self.assertTrue(new_user.is_active)
+		self.assertEqual(new_user.account_status, User.AccountStatus.PENDING_VERIFICATION)
+		self.assertFalse(new_user.email_verified)
+		self.assertIsNone(invitation.accepted_user)
+		self.assertEqual(invitation.status, Invitation.Status.PENDING)
+
+		uid = urlsafe_base64_encode(force_bytes(new_user.pk))
+		verify_response = self.client.post(
+			reverse('accounts:verify-email'),
+			{'uid': uid, 'token': default_token_generator.make_token(new_user)},
+			format='json',
+		)
+		self.assertEqual(verify_response.status_code, status.HTTP_200_OK)
+		login_response = self.client.post(
+			reverse('accounts:login'),
+			{'email': new_user.email, 'password': 'Lawyer-password-123!'},
+			format='json',
+		)
+		self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login_response.data['data']['access']}")
+		accept_response = self.client.post(
+			reverse('accounts:accept-invitation'),
+			{'token': raw_token},
+			format='json',
+		)
+		self.assertEqual(accept_response.status_code, status.HTTP_200_OK)
 
 		# Verify invitation status updated
 		invitation.refresh_from_db()
 		self.assertEqual(invitation.status, Invitation.Status.ACCEPTED)
 		self.assertIsNotNone(invitation.accepted_at)
+		self.assertEqual(invitation.accepted_user, new_user)
+		self.assertIsNone(invitation.token_hash)
 		self.assertTrue(AuditEvent.objects.filter(event_type=AuditEvent.EventType.INVITATION_ACCEPTED).exists())
+
+	def test_existing_account_acceptance_does_not_change_global_role(self):
+		owner = self.active_user(email='existing-invitee@example.com')
+		raw_token = Invitation.generate_token()
+		invitation = Invitation.objects.create(
+			inviter=self.active_user(email='owner-inviter@example.com'),
+			email=owner.email,
+			role=Invitation.RoleChoices.LAWYER_VERIFIER,
+			token_hash=Invitation.hash_token(raw_token),
+		)
+		from rest_framework_simplejwt.tokens import RefreshToken
+		self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(owner).access_token}')
+
+		response = self.client.post(
+			reverse('accounts:accept-invitation'),
+			{'token': raw_token},
+			format='json',
+		)
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		owner.refresh_from_db()
+		invitation.refresh_from_db()
+		self.assertEqual(owner.role, User.Role.OWNER)
+		self.assertEqual(invitation.accepted_user, owner)
 
 	# --- 10. OBJECT PERMISSIONS AND IS_OWNER TESTS ---
 

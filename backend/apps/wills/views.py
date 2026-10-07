@@ -6,7 +6,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from apps.accounts.permissions import IsActiveAccount, IsOwner, IsTestator
+from apps.accounts.permissions import CanManageOwnWills, IsActiveAccount, IsOwner
 from apps.audit.models import AuditEvent
 from apps.accounts.services import log_audit_event
 from .models import Will
@@ -15,7 +15,7 @@ from .serializers import WillSerializer
 
 class WillListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = WillSerializer
-    permission_classes = (IsAuthenticated, IsActiveAccount, IsTestator)
+    permission_classes = (IsAuthenticated, IsActiveAccount, CanManageOwnWills)
 
     def get_queryset(self):
         return Will.objects.filter(owner=self.request.user).select_related('owner')
@@ -78,9 +78,15 @@ class WillDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.status == Will.Status.FINALIZED:
+        if not instance.is_editable:
+            is_finalized = instance.status == Will.Status.FINALIZED
             return Response(
-                {'error': {'code': 'WILL_FINALIZED', 'message': 'This will is finalized and cannot be edited.'}},
+                {
+                    'error': {
+                        'code': 'WILL_FINALIZED' if is_finalized else 'WILL_NOT_EDITABLE',
+                        'message': 'This will is finalized and cannot be edited.' if is_finalized else 'Only draft wills can be edited.',
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         response = super().update(request, *args, **kwargs)
@@ -95,9 +101,15 @@ class WillDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.status == Will.Status.FINALIZED:
+        if not instance.is_editable:
+            is_finalized = instance.status == Will.Status.FINALIZED
             return Response(
-                {'error': {'code': 'WILL_FINALIZED', 'message': 'A finalized will cannot be deleted.'}},
+                {
+                    'error': {
+                        'code': 'WILL_FINALIZED' if is_finalized else 'WILL_NOT_EDITABLE',
+                        'message': 'A finalized will cannot be deleted.' if is_finalized else 'Only draft wills can be deleted.',
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         response = super().destroy(request, *args, **kwargs)

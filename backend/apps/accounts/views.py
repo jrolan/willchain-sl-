@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
+from django.db import transaction
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -7,6 +8,7 @@ from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
 from django.views.decorators.csrf import csrf_protect
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
@@ -16,7 +18,6 @@ from apps.audit.models import AuditEvent
 from .models import Invitation, User
 from .permissions import IsActiveAccount, IsOwner, IsTestator
 from .serializers import (
-	AcceptInvitationSerializer,
 	ChangePasswordSerializer,
 	ForgotPasswordSerializer,
 	InvitationSerializer,
@@ -291,17 +292,17 @@ class InvitationListView(generics.ListCreateAPIView):
 		serializer = self.get_serializer(queryset, many=True)
 		return Response({'data': serializer.data})
 
+	@transaction.atomic
 	def create(self, request, *args, **kwargs):
 		serializer = self.get_serializer(data=request.data, context={'request': request})
 		serializer.is_valid(raise_exception=True)
 		invitation = serializer.save()
-		send_invitation_email(invitation)
-		log_audit_event(
-			AuditEvent.EventType.INVITATION_SENT,
-			request=request,
+		AuditEvent.objects.create(
+			event_type=AuditEvent.EventType.INVITATION_SENT,
 			actor=request.user,
-			details={'invitee_email': invitation.email, 'role': invitation.role},
+			details={'invitation_id': invitation.pk, 'role': invitation.role},
 		)
+		send_invitation_email(invitation, serializer.context['raw_invitation_token'])
 		return Response(
 			{
 				'data': serializer.data,
@@ -316,62 +317,80 @@ class AcceptInvitationView(APIView):
 
 	def get(self, request):
 		token = request.query_params.get('token', '')
-		if not token:
+		if not isinstance(token, str) or not token:
 			return Response({'error': {'message': 'Invitation token is required.'}}, status=status.HTTP_400_BAD_REQUEST)
-		try:
-			invitation = Invitation.objects.get(token=token)
-		except Invitation.DoesNotExist:
+		invitation = Invitation.objects.select_related('inviter').filter(
+			token_hash=Invitation.hash_token(token),
+		).first()
+		if not invitation:
 			return Response({'error': {'message': 'Invitation not found.'}}, status=status.HTTP_404_NOT_FOUND)
 
 		if not invitation.is_valid():
 			return Response({'error': {'message': 'Invitation has expired or has already been used.'}}, status=status.HTTP_400_BAD_REQUEST)
 
-		return Response({
-			'data': {
-				'email': invitation.email,
-				'first_name': invitation.first_name,
-				'last_name': invitation.last_name,
-				'role': invitation.role,
-				'role_display': invitation.get_role_display(),
-				'inviter_name': f'{invitation.inviter.first_name} {invitation.inviter.last_name}'.strip() or invitation.inviter.email,
-			}
-		})
+		local, _, domain = invitation.email.partition('@')
+		return Response({'data': {
+			'email': f'{local[:1]}***@{domain}' if domain else '***',
+			'first_name': invitation.first_name,
+			'last_name': invitation.last_name,
+			'role': invitation.role,
+			'role_display': invitation.get_role_display(),
+			'inviter_name': f'{invitation.inviter.first_name} {invitation.inviter.last_name}'.strip() or 'WillChain member',
+		}})
 
+	@transaction.atomic
 	def post(self, request):
-		serializer = AcceptInvitationSerializer(data=request.data)
+		token = request.data.get('token')
+		if not isinstance(token, str) or not token:
+			return Response({'error': {'code': 'INVALID_INVITATION', 'message': 'Invitation is invalid or expired.'}}, status=status.HTTP_400_BAD_REQUEST)
+		invitation = Invitation.objects.select_for_update().filter(token_hash=Invitation.hash_token(token)).first()
+		if not invitation or not invitation.is_valid():
+			return Response({'error': {'code': 'INVALID_INVITATION', 'message': 'Invitation is invalid or expired.'}}, status=status.HTTP_400_BAD_REQUEST)
+		if invitation.role == Invitation.RoleChoices.BENEFICIARY:
+			return Response({'error': {'code': 'DEDICATED_BENEFICIARY_FLOW', 'message': 'Use the beneficiary invitation workflow for this invitation.'}}, status=status.HTTP_400_BAD_REQUEST)
+
+		if request.user and request.user.is_authenticated:
+			if request.user.email.lower() != invitation.email.lower():
+				raise PermissionDenied('This invitation belongs to a different account.')
+			if request.user.account_status != User.AccountStatus.ACTIVE or not request.user.email_verified:
+				raise PermissionDenied('Verify and activate your account before accepting this invitation.')
+			user = request.user
+			invitation.accepted_user = user
+			invitation.status = Invitation.Status.ACCEPTED
+			invitation.accepted_at = timezone.now()
+			invitation.token_hash = None
+			invitation.save(update_fields=['accepted_user', 'status', 'accepted_at', 'token_hash', 'updated_at'])
+			AuditEvent.objects.create(
+				event_type=AuditEvent.EventType.INVITATION_ACCEPTED,
+				actor=user,
+				target_user=user,
+				details={'invitation_id': invitation.pk, 'invited_role': invitation.role},
+			)
+			return Response({'data': UserSerializer(user).data, 'message': 'Invitation accepted. This does not grant access to a will.'})
+
+		email = request.data.get('email')
+		if not isinstance(email, str) or email.strip().lower() != invitation.email.lower():
+			return Response({'error': {'code': 'INVALID_INVITATION', 'message': 'Invitation or registration details are invalid.'}}, status=status.HTTP_400_BAD_REQUEST)
+		if User.objects.filter(email__iexact=invitation.email).exists():
+			return Response({'error': {'code': 'ACCOUNT_EXISTS', 'message': 'Sign in with the invited email to accept this invitation.'}}, status=status.HTTP_409_CONFLICT)
+		registration_data = {
+			'email': invitation.email,
+			'first_name': request.data.get('first_name') or invitation.first_name or 'Invited',
+			'last_name': request.data.get('last_name') or invitation.last_name or 'Member',
+			'phone_number': request.data.get('phone_number', ''),
+			'password': request.data.get('password'),
+			'password_confirmation': request.data.get('password_confirmation'),
+		}
+		serializer = RegistrationSerializer(data=registration_data, context={'registration_role': invitation.role})
 		serializer.is_valid(raise_exception=True)
-		invitation = serializer.validated_data['invitation']
-
-		user = User.objects.create_user(
-			email=invitation.email,
-			password=serializer.validated_data['password'],
-			first_name=serializer.validated_data.get('first_name') or invitation.first_name or 'Invited',
-			last_name=serializer.validated_data.get('last_name') or invitation.last_name or 'Member',
-			phone_number=serializer.validated_data.get('phone_number', ''),
-			role=invitation.role,
-			account_status=User.AccountStatus.ACTIVE,
-			email_verified=True,
+		user = serializer.save()
+		AuditEvent.objects.create(
+			event_type=AuditEvent.EventType.USER_REGISTERED,
+			target_user=user,
+			details={'role': user.role, 'registration_source': 'collaborator_invitation'},
 		)
-
-		invitation.status = Invitation.Status.ACCEPTED
-		invitation.accepted_at = timezone.now()
-		invitation.save(update_fields=['status', 'accepted_at', 'updated_at'])
-
-		log_audit_event(
-			AuditEvent.EventType.INVITATION_ACCEPTED,
-			request=request,
-			actor=user,
-			details={'invitation_id': invitation.id, 'role': user.role, 'inviter': invitation.inviter.email},
-		)
-
-		refresh = RefreshToken.for_user(user)
-		response = Response({
-			'data': {
-				'access': str(refresh.access_token),
-				'user': UserSerializer(user).data,
-			},
-			'message': 'Invitation accepted. Your account is active.',
+		send_email_verification(user)
+		return Response({
+			'data': UserSerializer(user).data,
+			'message': 'Account created. Verify your email, sign in, and reopen this link to accept the invitation.',
 		}, status=status.HTTP_201_CREATED)
-		set_refresh_cookie(response, refresh)
-		response.set_cookie('csrftoken', get_token(request), samesite='Lax')
-		return response

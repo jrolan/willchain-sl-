@@ -1,3 +1,4 @@
+import hashlib
 import secrets
 from datetime import timedelta
 
@@ -11,6 +12,7 @@ from .managers import UserManager
 class User(AbstractBaseUser, PermissionsMixin):
 	class Role(models.TextChoices):
 		OWNER = 'OWNER', 'Will Owner'
+		MEMBER = 'MEMBER', 'Member'
 		WITNESS = 'WITNESS', 'Witness'
 		BENEFICIARY = 'BENEFICIARY', 'Beneficiary'
 		LAWYER_VERIFIER = 'LAWYER_VERIFIER', 'Lawyer/Authorized Verifier'
@@ -69,11 +71,18 @@ class Invitation(models.Model):
 		on_delete=models.CASCADE,
 		related_name='sent_invitations',
 	)
+	accepted_user = models.ForeignKey(
+		User,
+		on_delete=models.SET_NULL,
+		null=True,
+		blank=True,
+		related_name='accepted_invitations',
+	)
 	email = models.EmailField(db_index=True)
 	first_name = models.CharField(max_length=150, blank=True)
 	last_name = models.CharField(max_length=150, blank=True)
 	role = models.CharField(max_length=32, choices=RoleChoices.choices)
-	token = models.CharField(max_length=64, unique=True, default=secrets.token_urlsafe)
+	token_hash = models.CharField(max_length=64, unique=True, null=True, blank=True)
 	status = models.CharField(max_length=32, choices=Status.choices, default=Status.PENDING, db_index=True)
 	message = models.TextField(blank=True)
 	expires_at = models.DateTimeField()
@@ -84,9 +93,22 @@ class Invitation(models.Model):
 	class Meta:
 		ordering = ('-created_at',)
 		indexes = [
-			models.Index(fields=['email', 'status']),
-			models.Index(fields=['token', 'status']),
+			models.Index(fields=['email', 'status'], name='accounts_in_email_0582fe_idx'),
+			models.Index(fields=['token_hash', 'status'], name='accounts_in_token_a8bcde_idx'),
 		]
+
+	@staticmethod
+	def generate_token():
+		return secrets.token_urlsafe(32)
+
+	@staticmethod
+	def hash_token(raw_token):
+		return hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+
+	def set_token(self, raw_token):
+		self.token_hash = self.hash_token(raw_token)
+		if self.pk:
+			self.save(update_fields=['token_hash', 'updated_at'])
 
 	def is_valid(self):
 		return self.status == self.Status.PENDING and self.expires_at > timezone.now()
@@ -94,8 +116,6 @@ class Invitation(models.Model):
 	def save(self, *args, **kwargs):
 		if not self.expires_at:
 			self.expires_at = timezone.now() + timedelta(days=7)
-		if not self.token:
-			self.token = secrets.token_urlsafe(32)
 		super().save(*args, **kwargs)
 
 	def __str__(self):
