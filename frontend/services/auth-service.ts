@@ -66,6 +66,34 @@ export function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> 
   return request<T>(path, init);
 }
 
+async function requestBlob(path: string, retry = true): Promise<Blob> {
+  const headers = new Headers();
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, { headers, credentials: 'include' });
+  } catch {
+    throw new Error(`Unable to reach the WillChain server at ${API_BASE_URL}. Make sure the backend is running.`);
+  }
+
+  if (response.status === 401 && retry) {
+    try {
+      await refreshAccessToken();
+      return requestBlob(path, false);
+    } catch {
+      accessToken = null;
+      throw new Error('Your session has expired. Please sign in again.');
+    }
+  }
+  if (!response.ok) await parseResponse<never>(response);
+  return response.blob();
+}
+
+export function apiDownload(path: string): Promise<Blob> {
+  return requestBlob(path);
+}
+
 export async function register(payload: Record<string, string>): Promise<{ data: User; message: string }> {
   return request("/auth/register/", { method: "POST", body: JSON.stringify(payload) });
 }

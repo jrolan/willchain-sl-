@@ -25,6 +25,7 @@ services:
     command: sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
     volumes:
       - ./backend:/app
+      - willchain_private_documents:/app/private_documents
     ports:
       - "8000:8000"
     depends_on:
@@ -46,3 +47,4 @@ services:
 
 volumes:
   willchain_postgres_data:
+  willchain_private_documents:

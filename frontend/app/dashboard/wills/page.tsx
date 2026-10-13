@@ -6,6 +6,7 @@ import { Check, ChevronLeft, ChevronRight, FilePenLine, LockKeyhole, Save, Shiel
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { useAuth } from "@/lib/auth-context";
 import { WillBeneficiaryManager } from "@/components/beneficiaries/will-beneficiary-manager";
+import { WillDocumentManager } from "@/components/documents/will-document-manager";
 import { createWill, finalizeWill, getProfile, getWills, updateWill } from "@/services/auth-service";
 import type { User } from "@/types/auth";
 import type { Will, WillContent } from "@/types/wills";
@@ -202,6 +203,10 @@ export default function WillsWorkspacePage() {
               return selectedWill ? <WillBeneficiaryManager key={selectedWill.id} willId={selectedWill.id} willStatus={selectedWill.status} /> : null;
             })() : <p className="mt-6 rounded-lg border border-[#dce4df] bg-white p-4 text-sm text-[#60776e]">Select a saved will to manage its beneficiary relationships.</p>}
           </div>
+          {(profileUser?.role === 'OWNER' || profileUser?.role === 'MEMBER') && selectedWillId !== null && (() => {
+            const selectedWill = wills.find((will) => will.id === selectedWillId);
+            return selectedWill ? <WillDocumentManager key={`documents-${selectedWill.id}`} willId={selectedWill.id} willStatus={selectedWill.status} /> : null;
+          })()}
         </div>
       </section>
       </div>

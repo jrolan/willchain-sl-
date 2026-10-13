@@ -10,6 +10,7 @@ env/
 *.log
 staticfiles/
 media/
+private_documents/
 
 # Environment and secrets
 .env

@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     'apps.audit',
     'apps.wills',
     'apps.beneficiaries',
+    'apps.documents',
 ]
 
 MIDDLEWARE = [
@@ -142,6 +143,9 @@ USE_TZ = True
 STATIC_URL = 'static/'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+PRIVATE_DOCUMENT_ROOT = Path(
+    env('PRIVATE_DOCUMENT_ROOT', default=str(BASE_DIR / 'private_documents'))
+).expanduser()
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
