@@ -1,4 +1,4 @@
-import type { ApiError, AuthResponse, Invitation, InvitationDetail, User } from "@/types/auth";
+import type { AuthResponse, Invitation, InvitationDetail, User } from "@/types/auth";
 import type { Will, WillPayload } from "@/types/wills";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
@@ -22,8 +22,9 @@ function csrfToken(): string | undefined {
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (response.ok) return response.status === 204 ? (undefined as T) : response.json();
-  const raw = (await response.json().catch(() => ({}))) as Record<string, any>;
-  let message = raw.error?.message ?? raw.detail ?? raw.message;
+  const raw = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  const nestedError = raw.error && typeof raw.error === 'object' ? raw.error : null;
+  let message = (nestedError && 'message' in nestedError ? nestedError.message : undefined) ?? raw.detail ?? raw.message;
   if (!message && typeof raw === "object") {
     const firstKey = Object.keys(raw)[0];
     if (firstKey) {
@@ -31,7 +32,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
       message = Array.isArray(val) ? val.join(" ") : String(val);
     }
   }
-  throw new Error(message || "The request could not be completed.");
+  throw new Error(typeof message === 'string' && message ? message : "The request could not be completed.");
 }
 
 async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {

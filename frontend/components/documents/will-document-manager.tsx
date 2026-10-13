@@ -16,6 +16,13 @@ import {
 } from '@/services/document-service';
 import type { DocumentIntegrityCheck, DocumentType, WillDocument } from '@/types/documents';
 import type { WillStatus } from '@/types/wills';
+import {
+  documentErrorMessage,
+  documentLifecycleRules,
+  integrityResultMessage,
+  validateDocumentFile,
+  DOCUMENT_MAX_BYTES,
+} from '@/lib/document-rules.mjs';
 
 const documentTypes: Array<{ value: DocumentType; label: string }> = [
   { value: 'IDENTITY', label: 'Identity document' },
@@ -28,10 +35,6 @@ const documentTypes: Array<{ value: DocumentType; label: string }> = [
 
 function formatSize(size: number) {
   return size < 1_000_000 ? `${Math.ceil(size / 1000)} KB` : `${(size / 1_000_000).toFixed(1)} MB`;
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'The document request could not be completed.';
 }
 
 export function WillDocumentManager({ willId, willStatus }: { willId: number; willStatus: WillStatus }) {
@@ -65,17 +68,9 @@ export function WillDocumentManager({ willId, willStatus }: { willId: number; wi
           setMaxFileSize(response.max_file_size_bytes);
         }
       })
-      .catch((loadError: unknown) => { if (mounted) setError(errorMessage(loadError)); });
+      .catch((loadError: unknown) => { if (mounted) setError(documentErrorMessage(loadError)); });
     return () => { mounted = false; };
   }, [willId]);
-
-  function validateFile(file: File) {
-    const extension = file.name.split('.').pop()?.toLowerCase();
-    if (!['pdf', 'jpg', 'jpeg', 'png'].includes(extension ?? '')) return 'Choose a PDF, JPEG, or PNG file.';
-    if (maxFileSize > 0 && file.size > maxFileSize) return `The file exceeds the ${formatSize(maxFileSize)} limit.`;
-    if (file.size === 0) return 'Empty files are not accepted.';
-    return '';
-  }
 
   async function runAction(action: () => Promise<unknown>, successMessage: string) {
     setError('');
@@ -85,7 +80,7 @@ export function WillDocumentManager({ willId, willStatus }: { willId: number; wi
       await refreshDocuments();
       setMessage(successMessage);
     } catch (actionError) {
-      setError(errorMessage(actionError));
+      setError(documentErrorMessage(actionError));
     } finally {
       setBusyId(null);
     }
@@ -93,7 +88,7 @@ export function WillDocumentManager({ willId, willStatus }: { willId: number; wi
 
   async function submitUpload() {
     if (!selectedFile) return;
-    const validationError = validateFile(selectedFile);
+    const validationError = validateDocumentFile(selectedFile, maxFileSize || DOCUMENT_MAX_BYTES);
     if (validationError) { setError(validationError); return; }
     setBusyId('upload');
     await runAction(
@@ -116,7 +111,7 @@ export function WillDocumentManager({ willId, willStatus }: { willId: number; wi
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (downloadError) {
-      setError(errorMessage(downloadError));
+      setError(documentErrorMessage(downloadError));
     } finally {
       setBusyId(null);
     }
@@ -132,7 +127,7 @@ export function WillDocumentManager({ willId, willStatus }: { willId: number; wi
       await refreshDocuments();
       setMessage('Integrity check recorded.');
     } catch (checkError) {
-      setError(errorMessage(checkError));
+      setError(documentErrorMessage(checkError));
     } finally {
       setBusyId(null);
     }
@@ -152,7 +147,7 @@ export function WillDocumentManager({ willId, willStatus }: { willId: number; wi
       setVersions((current) => ({ ...current, [documentId]: versionResponse.data }));
       setChecks((current) => ({ ...current, [documentId]: checkResponse.data }));
     } catch (historyError) {
-      setError(errorMessage(historyError));
+      setError(documentErrorMessage(historyError));
       setOpenHistory((current) => ({ ...current, [documentId]: false }));
     } finally {
       setBusyId(null);
@@ -170,7 +165,7 @@ export function WillDocumentManager({ willId, willStatus }: { willId: number; wi
 
   async function replaceFile(document: WillDocument, file: File | undefined) {
     if (!file) return;
-    const validationError = validateFile(file);
+    const validationError = validateDocumentFile(file, maxFileSize || DOCUMENT_MAX_BYTES);
     if (validationError) { setError(validationError); return; }
     setBusyId(document.id);
     await runAction(() => replaceWillDocument(willId, document.id, file), 'New document version created.');
@@ -182,7 +177,8 @@ export function WillDocumentManager({ willId, willStatus }: { willId: number; wi
     await runAction(() => deleteWillDocument(willId, document.id), 'Document soft-deleted.');
   }
 
-  const editable = willStatus === 'DRAFT';
+  const lifecycle = documentLifecycleRules(willStatus);
+  const editable = lifecycle.canMutate;
 
   return (
     <section className="mt-6 rounded-xl border border-[#dce4df] bg-white p-6 shadow-sm" aria-labelledby="will-documents-heading">
@@ -226,13 +222,13 @@ export function WillDocumentManager({ willId, willStatus }: { willId: number; wi
                 {document.description && <p className="mt-1 text-sm text-[#60776e]">{document.description}</p>}
                 <p className="mt-1 break-all font-mono text-[11px] text-[#809189]">SHA-256 {document.checksum_sha256}</p>
                 <p className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-[#60776e]">
-                  <FileCheck2 size={14} /> Integrity: {latestCheck ? `${latestCheck.result} · ${new Date(latestCheck.created_at).toLocaleString()}` : 'Not checked'}
+                  <FileCheck2 size={14} /> Integrity: {latestCheck ? `${latestCheck.result} · ${new Date(latestCheck.created_at).toLocaleString()}` : integrityResultMessage('NONE')}
                 </p>
-                {latestCheck?.result === 'MISMATCH' && <p className="mt-1 text-xs font-semibold text-[#8c422c]">Stored content differs from the accepted checksum. The original checksum is retained.</p>}
+                {latestCheck && <p className="mt-1 text-xs text-[#60776e]">{integrityResultMessage(latestCheck.result)}</p>}
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button type="button" title="Download document" aria-label={`Download ${document.original_filename}`} disabled={busyId !== null} onClick={() => download(document)} className="grid h-9 w-9 place-items-center rounded-lg border border-[#dce4df] text-[#176b5b] disabled:opacity-50"><Download size={16} /></button>
-                <button type="button" title="Verify integrity" aria-label={`Verify integrity of ${document.original_filename}`} disabled={busyId !== null} onClick={() => runIntegrityCheck(document.id)} className="grid h-9 w-9 place-items-center rounded-lg border border-[#dce4df] text-[#176b5b] disabled:opacity-50"><Check size={16} /></button>
+                <button type="button" title="Verify integrity" aria-label={`Verify integrity of ${document.original_filename}`} disabled={!lifecycle.canCheckIntegrity || busyId !== null} onClick={() => runIntegrityCheck(document.id)} className="grid h-9 w-9 place-items-center rounded-lg border border-[#dce4df] text-[#176b5b] disabled:opacity-50"><Check size={16} /></button>
                 <button type="button" title="View version and integrity history" aria-label={`View history for ${document.original_filename}`} disabled={busyId !== null} onClick={() => toggleHistory(document.id)} className="grid h-9 w-9 place-items-center rounded-lg border border-[#dce4df] text-[#176b5b] disabled:opacity-50"><Clock3 size={16} /></button>
                 {editable && <>
                   <button type="button" title="Edit metadata" aria-label={`Edit ${document.original_filename} metadata`} disabled={busyId !== null} onClick={() => { setEditingId(document.id); setEditType(document.document_type); setEditDescription(document.description); }} className="grid h-9 w-9 place-items-center rounded-lg border border-[#dce4df] text-[#176b5b]"><Pencil size={16} /></button>
