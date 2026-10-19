@@ -32,3 +32,7 @@ coverage/
 Thumbs.db
 .DS_Store
 *.terabox.uploading.cfg
+
+# AI tool folders
+.kilo/
+backend/.agents/
