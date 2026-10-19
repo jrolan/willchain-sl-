@@ -36,3 +36,6 @@ Thumbs.db
 # AI tool folders
 .kilo/
 backend/.agents/
+
+# Agent reports
+backend/PHASE*_REPORT.md
