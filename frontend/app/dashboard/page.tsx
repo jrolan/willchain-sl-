@@ -26,10 +26,10 @@ import {
 } from "lucide-react";
 
 import { DashboardShell } from "@/components/layout/dashboard-shell";
-import { getMyBeneficiaryRelationships } from "@/services/beneficiary-service";
+import { getMyBeneficiaryRelationships, getWillBeneficiaries } from "@/services/beneficiary-service";
 import { useAuth } from "@/lib/auth-context";
 import { getMyActivity } from "@/services/dashboard-service";
-import { createWill, finalizeWill, getInvitations, getProfile, getWills, sendInvitation, updateWill } from "@/services/auth-service";
+import { getInvitations, getProfile, getWills, sendInvitation } from "@/services/auth-service";
 import type { DashboardActivity } from "@/types/dashboard";
 import type { BeneficiaryRelationship, BeneficiarySelfRelationship } from "@/types/beneficiaries";
 import type { Invitation, InvitationRole, User, UserRole } from "@/types/auth";
@@ -40,6 +40,12 @@ const API_ORIGIN = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:80
 function avatarUrl(url: string | null | undefined) {
   if (!url) return "";
   return /^https?:\/\//i.test(url) ? url : `${API_ORIGIN}${url}`;
+}
+
+function PersonAvatar({ name, image }: { name: string; image: string | null | undefined }) {
+  const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "?";
+  const url = avatarUrl(image);
+  return <span className="dashboard-person-avatar">{url ? <img src={url} alt="" /> : initials}</span>;
 }
 
 function BeneficiaryRelationshipList({ relationships, loading }: { relationships: BeneficiarySelfRelationship[]; loading: boolean }) {
@@ -64,37 +70,37 @@ const roleCapabilities: Record<UserRole, Array<{ title: string; description: str
   OWNER: [
     { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
     { title: "Create Will", description: "Draft your digital will", href: "/dashboard/wills" },
-    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
+    { title: "Recent Activity", description: "Review recent account events", href: "/dashboard#activity" },
     { title: "Manage Relationships", description: "Manage people linked to your wills", href: "/dashboard/wills" },
   ],
   MEMBER: [
     { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
     { title: "Create Will", description: "Manage your own digital will", href: "/dashboard/wills" },
-    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
+    { title: "Recent Activity", description: "Review recent account events", href: "/dashboard#activity" },
     { title: "Manage Relationships", description: "Manage relationships on your own wills", href: "/dashboard/wills" },
   ],
   BENEFICIARY: [
     { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
     { title: "View Relationships", description: "Review active beneficiary relationships", href: "/dashboard#role-workspace" },
-    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
-    { title: "Private Access", description: "No access to another person's will", href: "/dashboard#security" },
+    { title: "Recent Activity", description: "Review recent account events", href: "/dashboard#activity" },
+    { title: "Privacy & Access", description: "Review your role's access limits", href: "/dashboard#security" },
   ],
   WITNESS: [
     { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
-    { title: "Verification", description: "Check your email verification status", href: "/dashboard#verification" },
-    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
-    { title: "Attestation", description: "Requests appear when assigned", href: "/dashboard#role-workspace" },
+    { title: "Account Verification", description: "Check your email verification status", href: "/dashboard#verification" },
+    { title: "Recent Activity", description: "Review recent account events", href: "/dashboard#activity" },
+    { title: "Attestation Status", description: "Review the current attestation workspace", href: "/dashboard#role-workspace" },
   ],
   LAWYER_VERIFIER: [
     { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
-    { title: "Verification", description: "Review assigned verification work", href: "/dashboard#role-workspace" },
-    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
-    { title: "Private Access", description: "Will content remains owner-private", href: "/dashboard#security" },
+    { title: "Verification Readiness", description: "Review legal verification workspace status", href: "/dashboard#role-workspace" },
+    { title: "Recent Activity", description: "Review recent account events", href: "/dashboard#activity" },
+    { title: "Privacy & Access", description: "Review your role's access limits", href: "/dashboard#security" },
   ],
   ADMINISTRATOR: [
     { title: "Manage Profile", description: "View and update your personal information", href: "/profile" },
-    { title: "Verification", description: "Check your email verification status", href: "/dashboard#verification" },
-    { title: "View Notifications", description: "Check account and workflow updates", href: "/dashboard#notifications" },
+    { title: "Account Verification", description: "Check your email verification status", href: "/dashboard#verification" },
+    { title: "Recent Activity", description: "Review recent account events", href: "/dashboard#activity" },
     { title: "Security", description: "Review account security settings", href: "/dashboard#security" },
   ],
 };
@@ -125,6 +131,8 @@ export default function DashboardPage() {
   const [inviteSuccess, setInviteSuccess] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
   const [wills, setWills] = useState<Will[]>([]);
+  const [willBeneficiaries, setWillBeneficiaries] = useState<Array<BeneficiaryRelationship & { will_title: string }>>([]);
+  const [expandedPersonKey, setExpandedPersonKey] = useState<string | null>(null);
   const [beneficiaryRelationships, setBeneficiaryRelationships] = useState<BeneficiarySelfRelationship[]>([]);
   const [loadingRelationships, setLoadingRelationships] = useState(false);
   const [activity, setActivity] = useState<DashboardActivity[]>([]);
@@ -132,10 +140,6 @@ export default function DashboardPage() {
   const [showAllActivity, setShowAllActivity] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
-  const [willTitle, setWillTitle] = useState("");
-  const [willBody, setWillBody] = useState("");
-  const [editingWillId, setEditingWillId] = useState<number | null>(null);
-  const [willBusy, setWillBusy] = useState(false);
   const [willError, setWillError] = useState("");
 
   // Route protection
@@ -195,63 +199,23 @@ export default function DashboardPage() {
   }
 
   async function loadWills() {
+    setLoadingRelationships(true);
     try {
       const response = await getWills();
       setWills(response.data);
+      const relationshipGroups = await Promise.all(response.data.map(async (will) => {
+        try {
+          const beneficiaryResponse = await getWillBeneficiaries(will.id);
+          return beneficiaryResponse.data.map((relationship) => ({ ...relationship, will_title: will.title }));
+        } catch {
+          return [];
+        }
+      }));
+      setWillBeneficiaries(relationshipGroups.flat());
     } catch {
       setWillError("Unable to load your wills.");
-    }
-  }
-
-  function beginWillEdit(will: Will) {
-    setEditingWillId(will.id);
-    setWillTitle(will.title);
-    setWillBody(String(will.content.sections?.[0]?.body ?? ""));
-    setWillError("");
-  }
-
-  function beginWillCreate() {
-    setEditingWillId(null);
-    setWillTitle("");
-    setWillBody("");
-    setWillError("");
-  }
-
-  async function saveWill(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setWillBusy(true);
-    setWillError("");
-    const payload = {
-      title: willTitle,
-      content: { sections: [{ title: "Will instructions", body: willBody }] },
-    };
-    try {
-      if (editingWillId) {
-        await updateWill(editingWillId, payload);
-      } else {
-        await createWill(payload);
-      }
-      await loadWills();
-      beginWillCreate();
-    } catch (err) {
-      setWillError(err instanceof Error ? err.message : "Unable to save this will draft.");
     } finally {
-      setWillBusy(false);
-    }
-  }
-
-  async function handleFinalize(will: Will) {
-    if (!window.confirm(`Finalize "${will.title}"? Finalized wills cannot be edited.`)) return;
-    setWillBusy(true);
-    setWillError("");
-    try {
-      await finalizeWill(will.id);
-      await loadWills();
-      if (editingWillId === will.id) beginWillCreate();
-    } catch (err) {
-      setWillError(err instanceof Error ? err.message : "Unable to finalize this will.");
-    } finally {
-      setWillBusy(false);
+      setLoadingRelationships(false);
     }
   }
 
@@ -316,6 +280,8 @@ export default function DashboardPage() {
   };
   const visibleActivity = showAllActivity ? activity : activity.slice(0, 5);
   const capabilities = roleCapabilities[profileUser?.role ?? "MEMBER"];
+  const visibleInvitations = invitations;
+  const visibleBeneficiaries = willBeneficiaries;
 
   return (
     <DashboardShell profileUser={profileUser}>
@@ -337,21 +303,21 @@ export default function DashboardPage() {
 
         <div className="dashboard-status-grid">
           <div className="rounded-xl border border-[#dce4df] bg-[#fffdf8] p-6 shadow-sm">
-            <p className="dashboard-status-label"><span className="dashboard-status-icon"><UserRound size={18} /></span>Role</p>
-            <p className="mt-3 text-xl font-semibold text-[#17372f]">
-              {profileUser?.role ? roleTitleMap[profileUser.role] : "Loading..."}
+            <p className="dashboard-status-label"><span className="dashboard-status-icon green"><CheckCircle2 size={18} /></span>Account status</p>
+            <p className="mt-3 text-xl font-semibold text-[#176b5b]">
+              {profileUser?.account_status ?? "Loading..."}
             </p>
           </div>
           <div className="rounded-xl border border-[#dce4df] bg-[#fffdf8] p-6 shadow-sm">
-            <p className="dashboard-status-label"><span className="dashboard-status-icon green"><CheckCircle2 size={18} /></span>Account status</p>
-            <p className="mt-3 text-xl font-semibold text-[#176b5b]">
-              {profileUser?.account_status ?? "Unknown"}
-            </p>
-          </div>
-          <div id="verification" className="rounded-xl border border-[#dce4df] bg-[#fffdf8] p-6 shadow-sm">
-            <p className="dashboard-status-label"><span className="dashboard-status-icon purple"><ShieldCheck size={18} /></span>Email verification</p>
+            <p id="verification" className="dashboard-status-label"><span className="dashboard-status-icon purple"><ShieldCheck size={18} /></span>Verification status</p>
             <p className="mt-3 text-base font-medium text-[#17372f]">
               {profileUser?.email_verified ? "Verified" : "Pending"}
+            </p>
+          </div>
+          <div className="rounded-xl border border-[#dce4df] bg-[#fffdf8] p-6 shadow-sm">
+            <p className="dashboard-status-label"><span className="dashboard-status-icon"><UserRound size={18} /></span>Role</p>
+            <p className="mt-3 text-xl font-semibold text-[#17372f]">
+              {profileUser?.role ? roleTitleMap[profileUser.role] : "Loading..."}
             </p>
           </div>
           <div className="rounded-xl border border-[#dce4df] bg-[#fffdf8] p-6 shadow-sm">
@@ -361,7 +327,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="dashboard-template-grid">
+        <div className={`dashboard-template-grid ${profileUser?.role === "OWNER" ? "dashboard-template-grid-owner" : ""}`}>
           <div className="dashboard-template-primary">
         {/* --- ROLE-SPECIFIC WORKSPACE CONTENT --- */}
         {profileUser?.role === "OWNER" && (
@@ -372,29 +338,12 @@ export default function DashboardPage() {
                   <h2 className="text-2xl font-semibold text-[#17372f]">My Will</h2>
                   <p className="mt-1 text-sm text-[#60776e]">Draft, review, and finalize your private digital will.</p>
                 </div>
-                <button type="button" onClick={() => router.push("/dashboard/wills")} className="inline-flex items-center gap-2 rounded-lg bg-[#176b5b] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#0f5548]">
+                <button type="button" onClick={() => router.push("/dashboard/wills?new=1")} className="inline-flex items-center gap-2 rounded-lg bg-[#176b5b] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#0f5548]">
                   <Plus size={16} /> New will
                 </button>
               </div>
 
               {willError && <div className="mt-4 rounded-lg bg-[#fff3ed] p-3 text-sm text-[#8c422c]" role="alert">{willError}</div>}
-
-              {editingWillId !== null && (
-                <form className="mt-6 grid gap-4 border-t border-[#edf1ee] pt-6" onSubmit={saveWill}>
-                  <label className="text-sm font-semibold text-[#17372f]">
-                    Will title
-                    <input required value={willTitle} onChange={(event) => setWillTitle(event.target.value)} className="mt-1.5 w-full rounded-lg border border-[#dce4df] p-2.5 font-normal" placeholder="My last will and testament" />
-                  </label>
-                  <label className="text-sm font-semibold text-[#17372f]">
-                    Draft instructions
-                    <textarea required rows={5} value={willBody} onChange={(event) => setWillBody(event.target.value)} className="mt-1.5 w-full rounded-lg border border-[#dce4df] p-2.5 font-normal" placeholder="Record the instructions you want to review before finalization." />
-                  </label>
-                  <div className="flex justify-end gap-3">
-                    {editingWillId !== null && <button type="button" onClick={beginWillCreate} className="rounded-lg px-4 py-2 text-sm font-semibold text-[#60776e] hover:bg-gray-100">Cancel</button>}
-                    <button type="submit" disabled={willBusy} className="rounded-lg bg-[#176b5b] px-5 py-2 text-sm font-semibold text-white hover:bg-[#0f5548]">{willBusy ? "Saving..." : editingWillId ? "Save draft" : "Create draft"}</button>
-                  </div>
-                </form>
-              )}
 
               {wills.length === 0 ? (
                 <div className="dashboard-will-empty">
@@ -403,19 +352,19 @@ export default function DashboardPage() {
                   <p>Start creating your digital will to secure your legacy and protect your loved ones.</p>
                   <Link href="/dashboard/wills" className="dashboard-create-will">Create My Will</Link>
                 </div>
-              ) : <div className="mt-6 grid gap-3">
+              ) : <div className="dashboard-will-card-grid">
                 {wills.map((will) => (
-                  <div key={will.id} className="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-[#edf1ee] p-4">
-                    <div>
-                      <p className="font-semibold text-[#17372f]">{will.title}</p>
-                      <p className="mt-1 text-xs text-[#809189]">Version {will.version} · Updated {new Date(will.updated_at).toLocaleDateString()}</p>
+                  <article key={will.id} className="dashboard-will-card">
+                    <div className="dashboard-will-card-copy">
+                      <p>{will.title}</p>
+                      <small>Version {will.version} · Updated {new Date(will.updated_at).toLocaleDateString()}</small>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${will.status === "FINALIZED" ? "bg-[#d8f0e5] text-[#0f5548]" : "bg-[#fff3d6] text-[#8c5e15]"}`}>{will.status}</span>
-                      {will.status === "DRAFT" && <button type="button" onClick={() => beginWillEdit(will)} className="rounded-lg border border-[#dce4df] px-3 py-1.5 text-xs font-semibold text-[#176b5b]">Edit</button>}
-                      {will.status === "DRAFT" && <button type="button" disabled={willBusy} onClick={() => handleFinalize(will)} className="rounded-lg bg-[#176b5b] px-3 py-1.5 text-xs font-semibold text-white">Finalize</button>}
+                    <div className="dashboard-will-card-actions">
+                      <span className={`dashboard-will-status ${will.status === "FINALIZED" ? "finalized" : "draft"}`}>{will.status}</span>
+                      {will.status === "DRAFT" && <button type="button" onClick={() => router.push(`/dashboard/wills?willId=${will.id}&step=0`)} className="dashboard-will-edit">Edit</button>}
+                      {will.status === "DRAFT" && <button type="button" title="Review this draft before finalizing" onClick={() => router.push(`/dashboard/wills?willId=${will.id}&step=6`)} className="dashboard-will-review">Review</button>}
                     </div>
-                  </div>
+                  </article>
                 ))}
                 <Link href="/dashboard/wills" className="dashboard-view-all">View All <ArrowUpRight size={12} /></Link>
               </div>}
@@ -438,42 +387,68 @@ export default function DashboardPage() {
             </div>
 
             {/* Invitations list */}
-            <div className="mt-6 overflow-hidden rounded-xl border border-[#dce4df] bg-white shadow-sm">
-              {loadingInvitations ? (
-                <div className="p-8 text-center text-sm text-[#809189]">Loading invitations...</div>
-              ) : invitations.length === 0 ? (
-                <div className="p-8 text-center">
-                  <UserPlus className="mx-auto text-[#809189]" size={36} />
-                  <p className="mt-3 font-semibold text-[#17372f]">No collaborators invited yet</p>
-                  <p className="mt-1 text-xs text-[#809189]">
-                    Invite witnesses and legal verifiers here, or manage beneficiaries from a draft will.
-                  </p>
-                </div>
-              ) : (
-                <div className="divide-y divide-[#edf1ee]">
-                  {invitations.map((inv) => (
-                    <div key={inv.id} className="flex flex-wrap items-center justify-between p-5 hover:bg-[#fafaf8]">
-                      <div>
-                        <div className="flex items-center gap-3">
-                          <span className="font-semibold text-[#17372f]">
-                            {inv.first_name || inv.last_name ? `${inv.first_name} ${inv.last_name}` : inv.email}
-                          </span>
-                          <span className="rounded-full bg-[#f3dfae]/40 px-2.5 py-0.5 text-xs font-bold text-[#8c5e15]">
-                            {roleTitleMap[inv.role] ?? inv.role}
-                          </span>
-                          <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${inv.status === "ACCEPTED" ? "bg-[#d8f0e5] text-[#0f5548]" : "bg-[#f3f4f6] text-[#4b5563]"}`}>
-                            {inv.status}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-xs text-[#809189]">
-                          <Mail size={12} className="inline mr-1" /> {inv.email} · Invited on {new Date(inv.created_at).toLocaleDateString()}
-                        </p>
-                      </div>
-                      {inv.status === "PENDING" && <span className="mt-2 text-xs text-[#809189] sm:mt-0">Invitation sent by email</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
+            <div className="mt-6">
+              <nav className="dashboard-people-filters" aria-label="People directories">
+                {([
+                  ["/dashboard#people", "Everyone", invitations.length + willBeneficiaries.length],
+                  ["/dashboard/people/lawyers", "Lawyers", invitations.filter((invitation) => invitation.role === "LAWYER_VERIFIER").length],
+                  ["/dashboard/people/witnesses", "Witnesses", invitations.filter((invitation) => invitation.role === "WITNESS").length],
+                  ["/dashboard/people/beneficiaries", "Beneficiaries", willBeneficiaries.length],
+                ] as const).map(([href, label, count]) => {
+                  return <Link key={href} href={href}>{label}<span>{count}</span></Link>;
+                })}
+              </nav>
+
+              <div className="dashboard-people-results">
+                <section className="dashboard-people-group">
+                  <h3>Lawyers and Witnesses</h3>
+                  {loadingInvitations ? <p className="dashboard-people-empty">Loading collaborator records...</p> : visibleInvitations.length === 0 ? <p className="dashboard-people-empty">No people in this group yet.</p> : <div className="dashboard-person-grid">
+                    {visibleInvitations.map((invitation) => {
+                      const displayName = [invitation.accepted_user_profile?.first_name || invitation.first_name, invitation.accepted_user_profile?.last_name || invitation.last_name].filter(Boolean).join(" ") || invitation.email;
+                      const personKey = `invitation-${invitation.id}`;
+                      const expanded = expandedPersonKey === personKey;
+                      return <article className="dashboard-person-card" key={invitation.id}>
+                        <button type="button" className="dashboard-person-trigger" aria-expanded={expanded} onClick={() => setExpandedPersonKey(expanded ? null : personKey)}>
+                          <PersonAvatar name={displayName} image={invitation.accepted_user_profile?.avatar} />
+                          <span className="dashboard-person-copy"><strong>{displayName}</strong><span><Mail size={12} />{invitation.email}</span><small>{roleTitleMap[invitation.role] ?? invitation.role} · {invitation.status}</small></span>
+                          <ChevronRight className={expanded ? "dashboard-person-chevron expanded" : "dashboard-person-chevron"} size={16} />
+                        </button>
+                        {expanded && <div className="dashboard-person-details">
+                          <p><strong>Connection:</strong> {roleTitleMap[invitation.role] ?? invitation.role}</p>
+                          <p><strong>Invitation:</strong> {invitation.status} · Sent {new Date(invitation.created_at).toLocaleDateString()}</p>
+                          {invitation.message && <p><strong>Message:</strong> {invitation.message}</p>}
+                          {invitation.accepted_user_profile && <p><strong>Account:</strong> Invitation accepted</p>}
+                        </div>}
+                      </article>;
+                    })}
+                  </div>}
+                </section>
+
+                <section className="dashboard-people-group">
+                  <h3>Beneficiaries</h3>
+                  {loadingRelationships ? <p className="dashboard-people-empty">Loading beneficiary relationships...</p> : visibleBeneficiaries.length === 0 ? <p className="dashboard-people-empty">No beneficiaries have been added to your wills yet.</p> : <div className="dashboard-person-grid">
+                    {visibleBeneficiaries.map((relationship) => {
+                      const displayName = [relationship.beneficiary_user_profile?.first_name, relationship.beneficiary_user_profile?.last_name].filter(Boolean).join(" ") || relationship.full_name || relationship.recipient_email;
+                      const personKey = `beneficiary-${relationship.will}-${relationship.id}`;
+                      const expanded = expandedPersonKey === personKey;
+                      return <article className="dashboard-person-card" key={`${relationship.will}-${relationship.id}`}>
+                        <button type="button" className="dashboard-person-trigger" aria-expanded={expanded} onClick={() => setExpandedPersonKey(expanded ? null : personKey)}>
+                          <PersonAvatar name={displayName} image={relationship.beneficiary_user_profile?.avatar} />
+                          <span className="dashboard-person-copy"><strong>{displayName}</strong><span><Mail size={12} />{relationship.beneficiary_user_email || relationship.recipient_email}</span><small>{relationship.relationship_type} · {relationship.status} · {relationship.will_title}</small></span>
+                          <ChevronRight className={expanded ? "dashboard-person-chevron expanded" : "dashboard-person-chevron"} size={16} />
+                        </button>
+                        {expanded && <div className="dashboard-person-details">
+                          <p><strong>Connection:</strong> {relationship.relationship_type.toLowerCase()} beneficiary</p>
+                          <p><strong>Will:</strong> {relationship.will_title}</p>
+                          <p><strong>Relationship status:</strong> {relationship.status}</p>
+                          {relationship.latest_invitation_status && <p><strong>Invitation:</strong> {relationship.latest_invitation_status}</p>}
+                          {relationship.accepted_at && <p><strong>Accepted:</strong> {new Date(relationship.accepted_at).toLocaleDateString()}</p>}
+                        </div>}
+                      </article>;
+                    })}
+                  </div>}
+                </section>
+              </div>
             </div>
           </div>
         )}
@@ -557,7 +532,7 @@ export default function DashboardPage() {
               <Link href="/forgot-password" className="dashboard-quick-action"><span className="dashboard-quick-icon"><LockKeyhole size={16} /></span><span><strong>Password Reset</strong><small>Reset your password if forgotten</small></span><ChevronRight size={14} /></Link>
               <button type="button" onClick={downloadAccountData} disabled={exportBusy} className="dashboard-quick-action dashboard-download-action"><span className="dashboard-quick-icon"><Download size={16} /></span><span><strong>{exportBusy ? "Preparing Download..." : "Download Your Data"}</strong><small>Export your profile, wills, relationships, and activity</small></span><ChevronRight size={14} /></button>
               {exportMessage && <p className="dashboard-export-message" role="status">{exportMessage}</p>}
-              <Link href="/dashboard#notifications" className="dashboard-quick-action"><span className="dashboard-quick-icon"><Bell size={16} /></span><span><strong>View Notifications</strong><small>Check account and workflow updates</small></span><ChevronRight size={14} /></Link>
+              <Link href="/dashboard#activity" className="dashboard-quick-action"><span className="dashboard-quick-icon"><Activity size={16} /></span><span><strong>Recent Activity</strong><small>Review recent account events</small></span><ChevronRight size={14} /></Link>
             </section>
 
             <section id="notifications" className="dashboard-notification-card">
@@ -582,11 +557,12 @@ export default function DashboardPage() {
               <div className="dashboard-profile-details">
                 <span><Mail size={13} />{profileUser?.email ?? "Email unavailable"}</span>
                 {profileUser?.phone_number && <span><UserRound size={13} />{profileUser.phone_number}</span>}
+                {profileUser?.created_at && <span><Activity size={13} />Member since {new Date(profileUser.created_at).toLocaleDateString()}</span>}
               </div>
               <div className="dashboard-verified-note"><ShieldCheck size={15} />{profileUser?.email_verified ? "Email verified" : "Email verification pending"}</div>
             </section>
 
-            <section className="dashboard-activity-card">
+            <section id="activity" className="dashboard-activity-card">
               <div className="dashboard-activity-heading"><h2><Activity size={16} /> Recent Activity</h2>{activity.length > 5 && <button type="button" onClick={() => setShowAllActivity((current) => !current)}>{showAllActivity ? "Show less" : "View all"} <ArrowUpRight size={11} /></button>}</div>
               {loadingActivity ? <p className="dashboard-activity-empty">Loading recent activity...</p> : visibleActivity.length === 0 ? <p className="dashboard-activity-empty">Your account activity will appear here when events are recorded.</p> : (
                 <div className="dashboard-activity-list">

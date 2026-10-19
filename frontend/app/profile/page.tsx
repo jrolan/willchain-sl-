@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Camera, CheckCircle2, KeyRound, Mail, Phone, ShieldCheck, UserRound, X } from "lucide-react";
+import { Camera, CheckCircle2, KeyRound, LockKeyhole, Mail, Phone, ShieldCheck, UserRound, X } from "lucide-react";
 
+import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { useAuth } from "@/lib/auth-context";
 import { changePassword, getProfile, updateProfile } from "@/services/auth-service";
 import type { User } from "@/types/auth";
@@ -139,42 +139,57 @@ export default function ProfilePage() {
   const initials = `${form.first_name.charAt(0)}${form.last_name.charAt(0)}`.toUpperCase() || "WC";
 
   return (
-    <main className="profile-page">
-      <header className="profile-header"><Link href="/dashboard" className="profile-brand"><span className="profile-brand-mark"><ShieldCheck size={17} /></span> WILLCHAIN SL</Link><Link href="/dashboard" className="profile-back"><ArrowLeft size={15} /> Dashboard</Link></header>
-      <section className="profile-content">
-        <div className="profile-heading"><div><p className="profile-eyebrow">Account settings</p><h1>Account profile</h1><p className="profile-intro">Keep your identity details current for secure, accountable access.</p></div><div className="profile-status"><CheckCircle2 size={17} /> {user?.account_status ?? "Loading"}</div></div>
-        {error && <div className="profile-alert">{error}</div>}
-        {message && <div className="profile-success" role="status">{message}</div>}
-        <div className="profile-layout">
-          <aside className="profile-card profile-summary">
-            <div className="avatar-wrap"><div className="avatar-image">{avatarPreview ? <img src={avatarPreview} alt="Profile" /> : <span>{initials}</span>}</div><button className="avatar-button" type="button" onClick={openCamera} title="Take a profile photo"><Camera size={16} /></button></div>
-            <div className="avatar-actions"><button type="button" onClick={openCamera}><Camera size={15} /> Take photo</button><button type="button" onClick={() => fileInput.current?.click()}><UserRound size={15} /> Choose file</button><input ref={fileInput} className="avatar-input" type="file" accept="image/*" onChange={(event) => selectAvatar(event.target.files?.[0])} /></div>
-            <h2>{form.first_name || "Your name"} {form.last_name}</h2><p className="summary-role">{user?.role ?? "Account role"}</p><p className="summary-helper">Add a clear profile photo so your identity is easy to recognise during secure workflows.</p>
-            <div className="summary-details"><span><Mail size={15} /> {user?.email ?? "Loading email"}</span><span><Phone size={15} /> {form.phone_number || "No phone added"}</span></div>
-          </aside>
-          <div className="flex flex-col gap-6">
-            <div className="profile-card profile-form-card"><div className="card-heading"><div className="heading-icon"><UserRound size={18} /></div><div><h2>Personal details</h2><p>These details identify your account.</p></div></div><form className="profile-form" onSubmit={submit}>
-              <label><span>Email address</span><input disabled value={user?.email ?? ""} /></label>
-              <div className="profile-form-row"><label><span>First name</span><input required value={form.first_name} onChange={(event) => setForm({ ...form, first_name: event.target.value })} /></label><label><span>Last name</span><input required value={form.last_name} onChange={(event) => setForm({ ...form, last_name: event.target.value })} /></label></div>
-              <label><span>Phone number</span><input type="tel" value={form.phone_number} onChange={(event) => setForm({ ...form, phone_number: event.target.value })} placeholder="Optional" /></label>
-              <div className="profile-form-actions"><p>Changes are recorded with your account activity.</p><button type="submit">Save profile</button></div>
-            </form></div>
+    <DashboardShell profileUser={user}>
+      <div className="dashboard-page account-settings-page">
+        <section className="account-settings-content">
+          <header className="account-settings-heading">
+            <div><p>ACCOUNT SETTINGS</p><h1>Profile &amp; security</h1><span>Manage your identity details and sign-in credentials.</span></div>
+            <span className="account-settings-status"><CheckCircle2 size={15} /> {user?.account_status ?? "Loading"}</span>
+          </header>
 
-            <div id="change-password" className="profile-card profile-form-card"><div className="card-heading"><div className="heading-icon"><KeyRound size={18} /></div><div><h2>Change password</h2><p>Choose a strong password to keep your digital estate protected.</p></div></div>
-            {passwordError && <div className="profile-alert mb-4">{passwordError}</div>}
-            {passwordMessage && <div className="profile-success mb-4" role="status">{passwordMessage}</div>}
-            <form className="profile-form" onSubmit={submitPassword}>
-              <label><span>Current password</span><input required type="password" autoComplete="current-password" value={passwordForm.current_password} onChange={(event) => setPasswordForm({ ...passwordForm, current_password: event.target.value })} /></label>
-              <div className="profile-form-row">
-                <label><span>New password</span><input required type="password" autoComplete="new-password" value={passwordForm.new_password} onChange={(event) => setPasswordForm({ ...passwordForm, new_password: event.target.value })} /></label>
-                <label><span>Confirm new password</span><input required type="password" autoComplete="new-password" value={passwordForm.new_password_confirmation} onChange={(event) => setPasswordForm({ ...passwordForm, new_password_confirmation: event.target.value })} /></label>
-              </div>
-              <div className="profile-form-actions"><p>Changing your password will revoke all other active sessions.</p><button type="submit" disabled={passwordBusy}>{passwordBusy ? "Updating..." : "Update password"}</button></div>
-            </form></div>
+          {error && <div className="account-settings-alert" role="alert">{error}</div>}
+          {message && <div className="account-settings-success" role="status">{message}</div>}
+
+          <div className="account-settings-status-grid">
+            <article><span><UserRound size={15} /> Account role</span><strong>{user?.role ?? "Loading"}</strong></article>
+            <article><span><Mail size={15} /> Email verification</span><strong>{user?.email_verified ? "Verified" : "Pending"}</strong></article>
+            <article><span><LockKeyhole size={15} /> Account status</span><strong>{user?.account_status ?? "Loading"}</strong></article>
           </div>
-        </div>
-      </section>
-      {cameraOpen && <div className="camera-backdrop" role="dialog" aria-modal="true" aria-label="Take profile photo"><div className="camera-dialog"><div className="camera-dialog-heading"><div><h2>Take profile photo</h2><p>Position your face in the frame, then capture.</p></div><button type="button" onClick={closeCamera} aria-label="Close camera"><X size={18} /></button></div><video ref={videoRef} autoPlay playsInline muted className="camera-preview" /><canvas ref={canvasRef} className="camera-canvas" /><div className="camera-actions"><button type="button" className="camera-cancel" onClick={closeCamera}>Cancel</button><button type="button" className="camera-capture" onClick={capturePhoto}><Camera size={16} /> Capture photo</button></div></div></div>}
-    </main>
+
+          <div className="account-settings-grid">
+            <aside className="account-profile-card">
+              <div className="account-avatar-wrap"><div className="account-avatar-image">{avatarPreview ? <img src={avatarPreview} alt="Profile" /> : <span>{initials}</span>}</div><button className="account-avatar-button" type="button" onClick={openCamera} title="Take a profile photo"><Camera size={15} /></button></div>
+              <div className="account-avatar-actions"><button type="button" onClick={openCamera}><Camera size={14} /> Take photo</button><button type="button" onClick={() => fileInput.current?.click()}><UserRound size={14} /> Choose image</button><input ref={fileInput} className="account-avatar-input" type="file" accept="image/*" onChange={(event) => selectAvatar(event.target.files?.[0])} /></div>
+              <h2>{form.first_name || "Your name"} {form.last_name}</h2><p>{user?.role?.replaceAll("_", " ") ?? "Account role"}</p>
+              <div className="account-profile-facts"><span><Mail size={14} />{user?.email ?? "Loading email"}</span><span><Phone size={14} />{form.phone_number || "No phone added"}</span></div>
+            </aside>
+
+            <div className="account-settings-panels">
+              <section className="account-settings-panel">
+                <header><span><UserRound size={16} /></span><div><h2>Personal information</h2><p>Keep the contact details on your account current.</p></div></header>
+                <form onSubmit={submit}>
+                  <label><span>Email address</span><input disabled value={user?.email ?? ""} /></label>
+                  <div className="account-settings-field-row"><label><span>First name</span><input required value={form.first_name} onChange={(event) => setForm({ ...form, first_name: event.target.value })} /></label><label><span>Last name</span><input required value={form.last_name} onChange={(event) => setForm({ ...form, last_name: event.target.value })} /></label></div>
+                  <label><span>Phone number</span><input type="tel" value={form.phone_number} onChange={(event) => setForm({ ...form, phone_number: event.target.value })} placeholder="Optional" /></label>
+                  <footer><p>Profile changes are recorded in account activity.</p><button type="submit">Save profile</button></footer>
+                </form>
+              </section>
+
+              <section id="change-password" className="account-settings-panel">
+                <header><span><KeyRound size={16} /></span><div><h2>Change password</h2><p>Confirm your current password before setting a new one.</p></div></header>
+                {passwordError && <div className="account-settings-alert" role="alert">{passwordError}</div>}
+                {passwordMessage && <div className="account-settings-success" role="status">{passwordMessage}</div>}
+                <form onSubmit={submitPassword}>
+                  <label><span>Current password</span><input required type="password" autoComplete="current-password" value={passwordForm.current_password} onChange={(event) => setPasswordForm({ ...passwordForm, current_password: event.target.value })} /></label>
+                  <div className="account-settings-field-row"><label><span>New password</span><input required type="password" autoComplete="new-password" value={passwordForm.new_password} onChange={(event) => setPasswordForm({ ...passwordForm, new_password: event.target.value })} /></label><label><span>Confirm new password</span><input required type="password" autoComplete="new-password" value={passwordForm.new_password_confirmation} onChange={(event) => setPasswordForm({ ...passwordForm, new_password_confirmation: event.target.value })} /></label></div>
+                  <footer><p>Password changes revoke other active sessions.</p><button type="submit" disabled={passwordBusy}>{passwordBusy ? "Updating..." : "Update password"}</button></footer>
+                </form>
+              </section>
+            </div>
+          </div>
+        </section>
+        {cameraOpen && <div className="camera-backdrop" role="dialog" aria-modal="true" aria-label="Take profile photo"><div className="camera-dialog"><div className="camera-dialog-heading"><div><h2>Take profile photo</h2><p>Position your face in the frame, then capture.</p></div><button type="button" onClick={closeCamera} aria-label="Close camera"><X size={18} /></button></div><video ref={videoRef} autoPlay playsInline muted className="camera-preview" /><canvas ref={canvasRef} className="camera-canvas" /><div className="camera-actions"><button type="button" className="camera-cancel" onClick={closeCamera}>Cancel</button><button type="button" className="camera-capture" onClick={capturePhoto}><Camera size={16} /> Capture photo</button></div></div></div>}
+      </div>
+    </DashboardShell>
   );
 }

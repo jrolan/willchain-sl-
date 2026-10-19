@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ReactNode, useMemo, useState } from "react";
 import {
-  Bell,
+  Activity,
   ChevronDown,
   ChevronRight,
   FileText,
@@ -39,81 +39,80 @@ type NavigationGroup = NavigationLink & { children?: NavigationLink[] };
 
 const roleNavigation: Record<UserRole, NavigationGroup[]> = {
   OWNER: [
-    { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+    { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
     { label: "My Will", href: "/dashboard/wills", icon: FileText, children: [
       { label: "Will Overview", href: "/dashboard/wills", icon: FileText },
       { label: "Beneficiaries", href: "/dashboard/wills#beneficiaries", icon: Users },
     ] },
     { label: "People", href: "/dashboard#people", icon: Users, children: [
-      { label: "Lawyer", href: "/dashboard#people", icon: Gavel },
-      { label: "Witness", href: "/dashboard#people", icon: UserCheck },
-      { label: "Beneficiaries", href: "/dashboard/wills#beneficiaries", icon: Users },
+      { label: "Lawyers", href: "/dashboard/people/lawyers", icon: Gavel },
+      { label: "Witnesses", href: "/dashboard/people/witnesses", icon: UserCheck },
+      { label: "Beneficiaries", href: "/dashboard/people/beneficiaries", icon: Users },
     ] },
-    { label: "Verification", href: "/dashboard#verification", icon: ShieldCheck },
-    { label: "Notifications", href: "/dashboard#notifications", icon: Bell },
+    { label: "Account Verification", href: "/dashboard#verification", icon: ShieldCheck },
+    { label: "Verification Workflow", href: "/dashboard/verification", icon: Gavel },
+    { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
     { label: "Security", href: "/dashboard#security", icon: ShieldCheck, children: [
       { label: "Account Settings", href: "/profile", icon: UserRound },
       { label: "Change Password", href: "/profile#change-password", icon: ShieldCheck },
     ] },
   ],
   MEMBER: [
-    { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+    { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
     { label: "My Will", href: "/dashboard/wills", icon: FileText, children: [
       { label: "Will Overview", href: "/dashboard/wills", icon: FileText },
       { label: "Beneficiaries", href: "/dashboard/wills#beneficiaries", icon: Users },
     ] },
+    { label: "Verification Workflow", href: "/dashboard/verification", icon: Gavel },
     { label: "People", href: "/dashboard#role-workspace", icon: Users, children: [
       { label: "My Relationships", href: "/dashboard#role-workspace", icon: Users },
     ] },
-    { label: "Notifications", href: "/dashboard#notifications", icon: Bell },
+    { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
     { label: "Security", href: "/dashboard#security", icon: ShieldCheck, children: [
       { label: "Account Settings", href: "/profile", icon: UserRound },
       { label: "Change Password", href: "/profile#change-password", icon: ShieldCheck },
     ] },
   ],
   BENEFICIARY: [
-    { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+    { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
-    { label: "People", href: "/dashboard#role-workspace", icon: Users, children: [
-      { label: "My Relationships", href: "/dashboard#role-workspace", icon: Users },
-    ] },
-    { label: "Verification", href: "/dashboard#verification", icon: ShieldCheck },
-    { label: "Notifications", href: "/dashboard#notifications", icon: Bell },
+    { label: "My Relationships", href: "/dashboard#role-workspace", icon: Users },
+    { label: "Verification Workflow", href: "/dashboard/verification", icon: Gavel },
+    { label: "Account Verification", href: "/dashboard#verification", icon: ShieldCheck },
+    { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
     { label: "Security", href: "/dashboard#security", icon: ShieldCheck, children: [
       { label: "Account Settings", href: "/profile", icon: UserRound },
       { label: "Change Password", href: "/profile#change-password", icon: ShieldCheck },
     ] },
   ],
   WITNESS: [
-    { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+    { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
-    { label: "People", href: "/dashboard#role-workspace", icon: Users, children: [
-      { label: "Lawyer", href: "/dashboard#role-workspace", icon: Gavel },
-      { label: "Witness", href: "/dashboard#role-workspace", icon: UserCheck },
-    ] },
-    { label: "Verification", href: "/dashboard#verification", icon: ShieldCheck },
-    { label: "Notifications", href: "/dashboard#notifications", icon: Bell },
+    { label: "Attestation Status", href: "/dashboard#role-workspace", icon: UserCheck },
+    { label: "Account Verification", href: "/dashboard#verification", icon: ShieldCheck },
+    { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
     { label: "Security", href: "/dashboard#security", icon: ShieldCheck, children: [
       { label: "Account Settings", href: "/profile", icon: UserRound },
       { label: "Change Password", href: "/profile#change-password", icon: ShieldCheck },
     ] },
   ],
   LAWYER_VERIFIER: [
-    { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+    { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
-    { label: "Verification", href: "/dashboard#role-workspace", icon: ShieldCheck },
-    { label: "Notifications", href: "/dashboard#notifications", icon: Bell },
+    { label: "Verification Workflow", href: "/dashboard/verification", icon: Gavel },
+    { label: "Verification Readiness", href: "/dashboard#role-workspace", icon: Gavel },
+    { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
     { label: "Security", href: "/dashboard#security", icon: ShieldCheck, children: [
       { label: "Account Settings", href: "/profile", icon: UserRound },
       { label: "Change Password", href: "/profile#change-password", icon: ShieldCheck },
     ] },
   ],
   ADMINISTRATOR: [
-    { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+    { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
-    { label: "Notifications", href: "/dashboard#notifications", icon: Bell },
+    { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
     { label: "Security", href: "/dashboard#security", icon: ShieldCheck, children: [
       { label: "Account Settings", href: "/profile", icon: UserRound },
       { label: "Change Password", href: "/profile#change-password", icon: ShieldCheck },
@@ -165,9 +164,13 @@ export function DashboardShell({ children, profileUser }: { children: ReactNode;
         <nav aria-label="Role-specific navigation" className="dashboard-sidebar-nav">
           {visibleLinks.map(({ label, href, icon: Icon, children }) => {
             const targetPath = href.split("#")[0];
-            const active = pathname === targetPath && (targetPath !== "/dashboard" || href === "/dashboard");
+            const childActive = children?.some((child) => {
+              const childPath = child.href.split("#")[0];
+              return pathname === childPath || (childPath !== "/dashboard" && pathname.startsWith(`${childPath}/`));
+            });
+            const active = ((pathname === targetPath && (targetPath !== "/dashboard" || href === "/dashboard")) || childActive || (label === "People" && pathname.startsWith("/dashboard/people/")));
             return (
-              <div key={label}>
+              <div className="dashboard-nav-item" key={label}>
                 {children ? (
                   <button type="button" className={`dashboard-nav-link dashboard-nav-group ${active ? "active" : ""}`} aria-expanded={Boolean(expandedGroups[label])} onClick={() => setExpandedGroups((current) => ({ ...current, [label]: !current[label] }))}>
                     <Icon size={17} /><span>{label}</span>{expandedGroups[label] ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -179,7 +182,9 @@ export function DashboardShell({ children, profileUser }: { children: ReactNode;
                 )}
                 {children && (expandedGroups[label] || Boolean(search.trim())) && <div className="dashboard-nav-children">{children.map((child) => {
                   const ChildIcon = child.icon;
-                  return <Link key={`${label}-${child.label}`} href={child.href} className="dashboard-nav-child" onClick={() => setMobileOpen(false)}><ChildIcon size={14} /><span>{child.label}</span></Link>;
+                  const childPath = child.href.split("#")[0];
+                  const childIsActive = pathname === childPath || (childPath !== "/dashboard" && pathname.startsWith(`${childPath}/`));
+                  return <Link key={`${label}-${child.label}`} href={child.href} aria-current={childIsActive ? "page" : undefined} className={`dashboard-nav-child ${childIsActive ? "active" : ""}`} onClick={() => setMobileOpen(false)}><ChildIcon size={14} /><span>{child.label}</span></Link>;
                 })}</div>}
               </div>
             );
@@ -197,7 +202,7 @@ export function DashboardShell({ children, profileUser }: { children: ReactNode;
           <label className="dashboard-search"><Search size={16} /><input aria-label="Search navigation" placeholder="Search navigation..." value={search} onChange={(event) => setSearch(event.target.value)} /></label>
           <div className="dashboard-topbar-actions">
             <ThemeToggle />
-            <Link href="/dashboard#notifications" className="dashboard-notification-button" aria-label="View notifications"><Bell size={18} /></Link>
+            <Link href="/dashboard#activity" className="dashboard-notification-button" aria-label="View recent activity"><Activity size={18} /></Link>
             {user && <div className="dashboard-user-menu">
               <button type="button" className="dashboard-user-chip" aria-haspopup="menu" aria-expanded={profileMenuOpen} onClick={() => setProfileMenuOpen((open) => !open)}>
                 <span className="dashboard-user-avatar">{avatarUrl(user.avatar) ? <img src={avatarUrl(user.avatar)} alt="" /> : name.slice(0, 1).toUpperCase()}</span>
@@ -206,7 +211,7 @@ export function DashboardShell({ children, profileUser }: { children: ReactNode;
               </button>
               {profileMenuOpen && <div className="dashboard-user-dropdown" role="menu">
                 <Link href="/profile" role="menuitem" onClick={() => setProfileMenuOpen(false)}>My Profile</Link>
-                <Link href="/dashboard" role="menuitem" onClick={() => setProfileMenuOpen(false)}>Dashboard</Link>
+                <Link href="/dashboard" role="menuitem" onClick={() => setProfileMenuOpen(false)}>Overview</Link>
                 <button type="button" role="menuitem" disabled={busy} onClick={handleSignOut}><LogOut size={14} /> Sign out</button>
               </div>}
             </div>}

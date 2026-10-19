@@ -131,8 +131,16 @@ class VerifyEmailSerializer(serializers.Serializer):
     token = serializers.CharField()
 
 
+class InvitationAcceptedUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('first_name', 'last_name', 'avatar')
+        read_only_fields = fields
+
+
 class InvitationSerializer(serializers.ModelSerializer):
     inviter_email = serializers.ReadOnlyField(source='inviter.email')
+    accepted_user_profile = InvitationAcceptedUserSerializer(source='accepted_user', read_only=True)
 
     class Meta:
         model = Invitation
@@ -142,6 +150,7 @@ class InvitationSerializer(serializers.ModelSerializer):
             'email',
             'first_name',
             'last_name',
+            'accepted_user_profile',
             'role',
             'status',
             'message',

@@ -3,6 +3,7 @@ export type WillStatus = "DRAFT" | "FINALIZED" | "ARCHIVED";
 export interface WillContent {
   testator?: {
     full_name?: string;
+    national_id?: string;
     address?: string;
     occupation?: string;
     marital_status?: "SINGLE" | "MARRIED" | "SEPARATED" | "WIDOWED" | "OTHER";

@@ -12,6 +12,7 @@ export interface BeneficiaryRelationship {
   recipient_email: string;
   beneficiary_user: number | null;
   beneficiary_user_email: string | null;
+  beneficiary_user_profile: Pick<User, "first_name" | "last_name" | "avatar"> | null;
   full_name: string;
   relationship_type: string;
   status: "ACTIVE" | "PENDING" | "DECLINED" | "REVOKED";

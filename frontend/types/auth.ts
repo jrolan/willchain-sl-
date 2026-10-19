@@ -48,6 +48,7 @@ export interface Invitation {
   email: string;
   first_name: string;
   last_name: string;
+  accepted_user_profile: Pick<User, "first_name" | "last_name" | "avatar"> | null;
   role: InvitationRole;
   status: InvitationStatus;
   message: string;

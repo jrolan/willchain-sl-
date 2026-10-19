@@ -8,9 +8,17 @@ from apps.wills.models import Will
 from .models import BeneficiaryInvitation, WillBeneficiary
 
 
+class BeneficiaryUserProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('first_name', 'last_name', 'avatar')
+        read_only_fields = fields
+
+
 class WillBeneficiarySerializer(serializers.ModelSerializer):
     recipient_email = serializers.SerializerMethodField()
     beneficiary_user_email = serializers.SerializerMethodField()
+    beneficiary_user_profile = BeneficiaryUserProfileSerializer(source='beneficiary_user', read_only=True)
     latest_invitation_status = serializers.SerializerMethodField()
     latest_invitation_expires_at = serializers.SerializerMethodField()
     latest_invitation_sent_at = serializers.SerializerMethodField()
@@ -23,6 +31,7 @@ class WillBeneficiarySerializer(serializers.ModelSerializer):
             'recipient_email',
             'beneficiary_user',
             'beneficiary_user_email',
+            'beneficiary_user_profile',
             'latest_invitation_status',
             'latest_invitation_expires_at',
             'latest_invitation_sent_at',

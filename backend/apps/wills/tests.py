@@ -310,6 +310,28 @@ class WillManagementApiTests(APITestCase):
         self.assertEqual(will.status, Will.Status.DRAFT)
         self.assertEqual(will.version, 2)
 
+    def test_owner_can_retrieve_finalized_will_but_not_edit_or_delete(self):
+        owner = self.active_user(email='owner_finalized_read@example.com')
+        will = Will.objects.create(owner=owner, title='Finalized Will', content={'body': 'initial'}, status=Will.Status.FINALIZED)
+        will.finalized_at = will.updated_at
+        will.save(update_fields=['finalized_at'])
+
+        response = self.client.get(reverse('wills:will-detail', args=[will.pk]), **self.auth_headers(owner))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data']['status'], Will.Status.FINALIZED)
+
+        patch_response = self.client.patch(
+            reverse('wills:will-detail', args=[will.pk]),
+            {'title': 'Changed title'},
+            format='json',
+            **self.auth_headers(owner),
+        )
+        self.assertEqual(patch_response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        delete_response = self.client.delete(reverse('wills:will-detail', args=[will.pk]), **self.auth_headers(owner))
+        self.assertEqual(delete_response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Will.objects.filter(pk=will.pk).exists())
+
     def test_finalized_will_cannot_be_edited(self):
         owner = self.active_user(email='owner3@example.com')
         will = Will.objects.create(owner=owner, title='Will', content={'body': 'initial'})

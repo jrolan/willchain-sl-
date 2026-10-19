@@ -19,11 +19,23 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@hookform/resolvers": "^5.9.1",
+    "@radix-ui/react-dialog": "^1.3.1",
+    "@radix-ui/react-tabs": "^1.2.1",
+    "@tiptap/extension-placeholder": "^3.32.0",
+    "@tiptap/extension-underline": "^3.32.0",
+    "@tiptap/react": "^3.32.0",
+    "@tiptap/starter-kit": "^3.32.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.44.0",
+    "motion": "^14.2.0",
     "next": "^16.3.4",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "react-hook-form": "^7.90.0",
+    "recharts": "^3.10.1",
+    "sonner": "^2.0.8",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",

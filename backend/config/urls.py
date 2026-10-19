@@ -26,6 +26,7 @@ urlpatterns = [
     path('api/v1/', include('apps.beneficiaries.urls')),
     path('api/v1/', include('apps.documents.urls')),
     path('api/v1/wills/', include('apps.wills.urls')),
+    path('api/v1/verification/', include('apps.verification.urls')),
 ]
 
 if settings.DEBUG:

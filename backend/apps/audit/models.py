@@ -22,6 +22,19 @@ class AuditEvent(models.Model):
         WILL_DELETED = 'WILL_DELETED', 'Will deleted'
         WILL_ACCESS_DENIED = 'WILL_ACCESS_DENIED', 'Will access denied'
         SECURITY_ALERT = 'SECURITY_ALERT', 'Security alert'
+        VERIFICATION_CASE_CREATED = 'VERIFICATION_CASE_CREATED', 'Verification case created'
+        VERIFICATION_CASE_SUBMITTED = 'VERIFICATION_CASE_SUBMITTED', 'Verification case submitted'
+        VERIFICATION_CASE_ASSIGNED = 'VERIFICATION_CASE_ASSIGNED', 'Verification case assigned'
+        VERIFICATION_DECISION_RECORDED = 'VERIFICATION_DECISION_RECORDED', 'Verification decision recorded'
+        WILL_DISCLOSURE_AUTHORIZED = 'WILL_DISCLOSURE_AUTHORIZED', 'Will copy disclosure authorised'
+        WILL_DISCLOSURE_REVOKED = 'WILL_DISCLOSURE_REVOKED', 'Will copy disclosure revoked'
+        VERIFICATION_EVIDENCE_UPLOADED = 'VERIFICATION_EVIDENCE_UPLOADED', 'Verification evidence uploaded'
+        VERIFICATION_ELIGIBILITY_CHECKED = 'VERIFICATION_ELIGIBILITY_CHECKED', 'Claimant eligibility checked'
+        VERIFICATION_CASE_RESUBMITTED = 'VERIFICATION_CASE_RESUBMITTED', 'Verification case resubmitted'
+        VERIFICATION_CASE_WITHDRAWN = 'VERIFICATION_CASE_WITHDRAWN', 'Verification case withdrawn'
+        VERIFICATION_REVIEW_BEGUN = 'VERIFICATION_REVIEW_BEGUN', 'Verification review begun'
+        VERIFICATION_INFORMATION_REQUESTED = 'VERIFICATION_INFORMATION_REQUESTED', 'Verification information requested'
+        VERIFICATION_EVIDENCE_SUFFICIENCY_CHANGED = 'VERIFICATION_EVIDENCE_SUFFICIENCY_CHANGED', 'Verification evidence sufficiency changed'
 
     event_type = models.CharField(max_length=64, choices=EventType.choices, db_index=True)
     actor = models.ForeignKey(

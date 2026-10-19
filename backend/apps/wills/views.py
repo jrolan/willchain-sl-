@@ -67,6 +67,8 @@ class WillDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
+        # Finalized and archived wills remain readable to the owner, but they are no
+        # longer mutable. The mutation checks live in update()/destroy() below.
         log_audit_event(
             AuditEvent.EventType.WILL_ACCESSED,
             request=request,

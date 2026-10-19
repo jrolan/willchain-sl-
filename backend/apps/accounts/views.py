@@ -285,7 +285,7 @@ class InvitationListView(generics.ListCreateAPIView):
 	permission_classes = (IsActiveAccount, IsTestator)
 
 	def get_queryset(self):
-		return Invitation.objects.filter(inviter=self.request.user)
+		return Invitation.objects.filter(inviter=self.request.user).select_related('accepted_user')
 
 	def list(self, request, *args, **kwargs):
 		queryset = self.get_queryset()

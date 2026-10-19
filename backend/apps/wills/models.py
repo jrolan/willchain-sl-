@@ -37,6 +37,10 @@ class Will(models.Model):
         return f'{self.title} ({self.owner.email})'
 
     @property
+    def is_read_only(self):
+        return self.status in {self.Status.FINALIZED, self.Status.ARCHIVED}
+
+    @property
     def is_editable(self):
         return self.status == self.Status.DRAFT
 

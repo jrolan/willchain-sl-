@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { AuthShell } from "@/components/auth/auth-shell";
 import { verifyEmail } from "@/services/auth-service";
 
 export default function VerifyAccountPage() {
@@ -30,5 +31,8 @@ export default function VerifyAccountPage() {
       });
   }, []);
 
-  return <main className="shell"><div className="panel"><div className="brand">WillChain SL</div><h2>Account verification</h2><p>{message}</p><div className="inline"><Link href="/login">Go to sign in</Link></div></div></main>;
+  return <AuthShell eyebrow="Identity verification" title={isSuccess ? "Your account is verified." : "Account verification"} description={message}>
+    <div className={`verification-result ${isSuccess ? "is-success" : ""}`} role="status">{message}</div>
+    <Link className="verification-link" href="/login">Continue to sign in <span aria-hidden="true">→</span></Link>
+  </AuthShell>;
 }

@@ -585,6 +585,36 @@ class AuthenticationApiTests(APITestCase):
 		self.assertEqual(owner.role, User.Role.OWNER)
 		self.assertEqual(invitation.accepted_user, owner)
 
+	def test_invitation_list_includes_minimal_profile_for_accepted_collaborator(self):
+		owner = self.active_user(email='profile-owner@example.com')
+		collaborator = self.active_user(
+			email='profile-witness@example.com',
+			first_name='Jane',
+			last_name='Witness',
+			avatar='avatars/jane.jpg',
+			role=User.Role.WITNESS,
+		)
+		Invitation.objects.create(
+			inviter=owner,
+			accepted_user=collaborator,
+			email=collaborator.email,
+			first_name='Invited',
+			role=Invitation.RoleChoices.WITNESS,
+			status=Invitation.Status.ACCEPTED,
+			accepted_at=timezone.now(),
+		)
+		from rest_framework_simplejwt.tokens import RefreshToken
+		self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(owner).access_token}')
+
+		response = self.client.get(reverse('accounts:invitations'))
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(response.data['data'][0]['accepted_user_profile'], {
+			'first_name': 'Jane',
+			'last_name': 'Witness',
+			'avatar': 'http://testserver/media/avatars/jane.jpg',
+		})
+
 	# --- 10. OBJECT PERMISSIONS AND IS_OWNER TESTS ---
 
 	def test_is_owner_permission_allows_owner_and_rejects_others(self):

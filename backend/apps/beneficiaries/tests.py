@@ -54,6 +54,36 @@ class BeneficiaryModuleTests(APITestCase):
         self.assertEqual(mail.outbox[0].to, ['mary@example.com'])
         self.assertIn('/beneficiary-invitation?token=', mail.outbox[0].body)
 
+    def test_owner_beneficiary_list_includes_linked_profile_avatar(self):
+        owner = self.active_user()
+        beneficiary = self.active_user(
+            email='mary@example.com',
+            first_name='Mary',
+            last_name='Doe',
+            avatar='avatars/mary.jpg',
+            role=User.Role.BENEFICIARY,
+        )
+        will = Will.objects.create(owner=owner, title='Family Will', content={})
+        WillBeneficiary.objects.create(
+            will=will,
+            beneficiary_user=beneficiary,
+            normalized_email=beneficiary.email,
+            full_name='Mary Doe',
+            status=WillBeneficiary.Status.ACTIVE,
+        )
+
+        response = self.client.get(
+            reverse('beneficiaries:will-beneficiaries', args=[will.pk]),
+            **self.auth_headers(owner),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['data'][0]['beneficiary_user_profile'], {
+            'first_name': 'Mary',
+            'last_name': 'Doe',
+            'avatar': 'http://testserver/media/avatars/mary.jpg',
+        })
+
     def test_finalized_will_rejects_beneficiary_mutation(self):
         owner = self.active_user(email='owner2@example.com')
         will = Will.objects.create(owner=owner, title='Finalized Will', content={'body': 'test'}, status=Will.Status.FINALIZED)

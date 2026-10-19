@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'apps.wills',
     'apps.beneficiaries',
     'apps.documents',
+    'apps.verification',
 ]
 
 MIDDLEWARE = [
