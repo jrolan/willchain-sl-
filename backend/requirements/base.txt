@@ -5,6 +5,7 @@ djangorestframework>=3.16,<3.17
 # Authentication and API security
 djangorestframework-simplejwt>=5.5,<6.0
 django-cors-headers>=4.7,<5.0
+google-auth[requests]>=2.0,<3.0
 
 # Configuration and PostgreSQL
 django-environ>=0.12,<1.0

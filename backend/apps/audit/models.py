@@ -35,6 +35,9 @@ class AuditEvent(models.Model):
         VERIFICATION_REVIEW_BEGUN = 'VERIFICATION_REVIEW_BEGUN', 'Verification review begun'
         VERIFICATION_INFORMATION_REQUESTED = 'VERIFICATION_INFORMATION_REQUESTED', 'Verification information requested'
         VERIFICATION_EVIDENCE_SUFFICIENCY_CHANGED = 'VERIFICATION_EVIDENCE_SUFFICIENCY_CHANGED', 'Verification evidence sufficiency changed'
+        BENEFICIARY_ALLOCATION_REVIEWED = 'BENEFICIARY_ALLOCATION_REVIEWED', 'Beneficiary allocation reviewed'
+        BENEFICIARY_RELEASE_AUTHORIZED = 'BENEFICIARY_RELEASE_AUTHORIZED', 'Beneficiary release authorized'
+        BENEFICIARY_ALLOCATION_ACCESSED = 'BENEFICIARY_ALLOCATION_ACCESSED', 'Beneficiary allocation accessed'
 
     event_type = models.CharField(max_length=64, choices=EventType.choices, db_index=True)
     actor = models.ForeignKey(

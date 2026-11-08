@@ -1,6 +1,10 @@
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
+import hashlib
+import hmac
+import secrets
+import uuid
 
 
 class VerificationCase(models.Model):
@@ -266,4 +270,90 @@ class EligibilityAssessment(models.Model):
 
     def __str__(self):
         return f'EligibilityAssessment for case #{self.case_id}: eligible={self.is_eligible}'
+
+
+class BeneficiaryRelease(models.Model):
+    class Status(models.TextChoices):
+        AUTHORIZED = 'AUTHORIZED', 'Authorized'
+        REVOKED = 'REVOKED', 'Revoked'
+        ACKNOWLEDGED = 'ACKNOWLEDGED', 'Claimed'
+
+    case = models.ForeignKey(
+        VerificationCase,
+        on_delete=models.PROTECT,
+        related_name='beneficiary_releases',
+    )
+    allocation = models.OneToOneField(
+        'beneficiaries.BeneficiaryAllocation',
+        on_delete=models.PROTECT,
+        related_name='release_authorization',
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.AUTHORIZED, db_index=True)
+    authorized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='authorized_beneficiary_releases',
+    )
+    authorized_at = models.DateTimeField(auto_now_add=True)
+    access_token_hash = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    token_expires_at = models.DateTimeField(null=True, blank=True)
+    first_accessed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ('-authorized_at',)
+        indexes = [
+            models.Index(fields=['case', 'status'], name='release_case_status_idx'),
+            models.Index(fields=['status', 'token_expires_at'], name='release_status_exp_idx'),
+        ]
+
+    def __str__(self):
+        return f'BeneficiaryRelease #{self.pk} for allocation {self.allocation_id} ({self.status})'
+
+    @staticmethod
+    def generate_access_token():
+        return secrets.token_urlsafe(32)
+
+    @staticmethod
+    def hash_access_token(raw_token):
+        return hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+
+    def access_token_matches(self, raw_token):
+        return bool(
+            self.access_token_hash
+            and hmac.compare_digest(self.access_token_hash, self.hash_access_token(raw_token))
+        )
+
+
+class BeneficiaryNotificationOutbox(models.Model):
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        PROCESSING = 'PROCESSING', 'Processing'
+        DELIVERED = 'DELIVERED', 'Delivered'
+        FAILED = 'FAILED', 'Failed'
+
+    release = models.OneToOneField(
+        BeneficiaryRelease,
+        on_delete=models.CASCADE,
+        related_name='notification',
+    )
+    recipient_email = models.EmailField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True)
+    idempotency_key = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    available_at = models.DateTimeField(db_index=True)
+    last_error = models.CharField(max_length=128, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ('created_at',)
+        indexes = [
+            models.Index(fields=['status', 'available_at'], name='notify_status_avail_idx'),
+        ]
+
+    def __str__(self):
+        return f'NotificationOutbox #{self.pk} ({self.status})'
 

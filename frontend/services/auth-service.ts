@@ -108,6 +108,15 @@ export async function login(email: string, password: string): Promise<User> {
   return response.data.user;
 }
 
+export async function googleLogin(idToken: string): Promise<User> {
+  const response = await request<AuthResponse>("/auth/google/login/", {
+    method: "POST",
+    body: JSON.stringify({ id_token: idToken }),
+  });
+  accessToken = response.data.access;
+  return response.data.user;
+}
+
 export async function refreshAccessToken(): Promise<void> {
   const headers = new Headers();
   const token = csrfToken();

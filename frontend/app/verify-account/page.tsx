@@ -9,8 +9,10 @@ import { verifyEmail } from "@/services/auth-service";
 export default function VerifyAccountPage() {
   const [message, setMessage] = useState("Verifying your account...");
   const [isSuccess, setIsSuccess] = useState(false);
+  const [hasPendingReleaseClaim, setHasPendingReleaseClaim] = useState(false);
 
   useEffect(() => {
+    setHasPendingReleaseClaim(Boolean(localStorage.getItem("willchain_release_claim_token")));
     const params = new URLSearchParams(window.location.search);
     const uid = params.get("uid") ?? "";
     const token = params.get("token") ?? "";
@@ -33,6 +35,6 @@ export default function VerifyAccountPage() {
 
   return <AuthShell eyebrow="Identity verification" title={isSuccess ? "Your account is verified." : "Account verification"} description={message}>
     <div className={`verification-result ${isSuccess ? "is-success" : ""}`} role="status">{message}</div>
-    <Link className="verification-link" href="/login">Continue to sign in <span aria-hidden="true">→</span></Link>
+    <Link className="verification-link" href={hasPendingReleaseClaim ? "/login?next=%2Fbeneficiary%2Frelease" : "/login"}>Continue to sign in <span aria-hidden="true">→</span></Link>
   </AuthShell>;
 }

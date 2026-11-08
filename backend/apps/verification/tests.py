@@ -12,12 +12,14 @@ Covers:
 
 import io
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.urls import reverse
+from django.utils import timezone
 from pypdf import PdfWriter
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
@@ -25,10 +27,11 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
 from apps.audit.models import AuditEvent
-from apps.beneficiaries.models import WillBeneficiary
+from apps.beneficiaries.models import BeneficiaryAllocation, WillBeneficiary
 from apps.wills.models import Will
 from apps.audit.models import AuditEvent
-from .models import CaseEvidence, CaseStatusHistory, EligibilityAssessment, VerificationCase, WillDisclosureAuthorization
+from .models import BeneficiaryNotificationOutbox, BeneficiaryRelease, CaseEvidence, CaseStatusHistory, EligibilityAssessment, VerificationCase, WillDisclosureAuthorization
+from .services import dispatch_beneficiary_notification
 from .services import create_case, transition_case_status
 
 
@@ -779,6 +782,119 @@ class VerificationModuleTests(APITestCase):
         res = self.client.get(self._status_url(will=other_will))
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_release_requires_approved_case_and_verified_allocations(self):
+        case = self._create_approved_post_death_case()
+        allocation = BeneficiaryAllocation.objects.create(
+            beneficiary=self.beneficiary_rel,
+            allocation_type=BeneficiaryAllocation.AllocationType.SPECIFIC_ITEM,
+            description='Family land',
+            review_status=BeneficiaryAllocation.ReviewStatus.PENDING,
+        )
+        self.client.force_authenticate(self.lawyer)
+        response = self.client.post(
+            reverse('verification:case-authorize-release', kwargs={'pk': case.pk}),
+            {'allocation_ids': [allocation.pk]},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(BeneficiaryRelease.objects.filter(allocation=allocation).exists())
+
+    def test_assigned_lawyer_allocation_review_is_bound_to_case(self):
+        case = self._make_post_death_case(lawyer=self.lawyer)
+        case.status = VerificationCase.Status.UNDER_REVIEW
+        case.save(update_fields=['status', 'updated_at'])
+        allocation = BeneficiaryAllocation.objects.create(
+            beneficiary=self.beneficiary_rel,
+            allocation_type=BeneficiaryAllocation.AllocationType.SPECIFIC_ITEM,
+            description='Reviewed item',
+        )
+        self.client.force_authenticate(self.lawyer)
+        response = self.client.post(
+            reverse('verification:case-allocation-review', kwargs={'pk': case.pk, 'allocation_pk': allocation.pk}),
+            {'review_status': 'VERIFIED'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        allocation.refresh_from_db()
+        self.assertEqual(allocation.review_status, BeneficiaryAllocation.ReviewStatus.VERIFIED)
+        self.assertEqual(allocation.reviewed_case, case)
+        self.assertEqual(allocation.reviewed_by, self.lawyer)
+        self.assertIsNotNone(allocation.reviewed_at)
+
+    @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_release_is_explicit_per_allocation_and_idempotent(self):
+        case = self._create_approved_post_death_case()
+        allocation = BeneficiaryAllocation.objects.create(
+            beneficiary=self.beneficiary_rel,
+            allocation_type=BeneficiaryAllocation.AllocationType.FIXED_AMOUNT,
+            amount='1250.0000',
+            currency_code='SLL',
+            review_status=BeneficiaryAllocation.ReviewStatus.VERIFIED,
+            reviewed_by=self.lawyer,
+            reviewed_case=case,
+            reviewed_at=timezone.now(),
+        )
+        url = reverse('verification:case-authorize-release', kwargs={'pk': case.pk})
+        self.client.force_authenticate(self.admin)
+        denied = self.client.post(url, {'allocation_ids': [allocation.pk]}, format='json')
+        self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(self.lawyer)
+        with self.captureOnCommitCallbacks(execute=True):
+            first = self.client.post(url, {'allocation_ids': [allocation.pk]}, format='json')
+        second = self.client.post(url, {'allocation_ids': [allocation.pk]}, format='json')
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertEqual(BeneficiaryRelease.objects.filter(allocation=allocation).count(), 1)
+        self.assertEqual(BeneficiaryNotificationOutbox.objects.filter(release__allocation=allocation).count(), 1)
+        release = BeneficiaryRelease.objects.get(allocation=allocation)
+        self.assertEqual(release.status, BeneficiaryRelease.Status.AUTHORIZED)
+        self.assertIsNotNone(release.access_token_hash)
+        self.assertTrue(AuditEvent.objects.filter(event_type=AuditEvent.EventType.BENEFICIARY_RELEASE_AUTHORIZED).exists())
+
+    @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+    def test_failed_release_email_can_be_retried_without_reversing_release(self):
+        case = self._create_approved_post_death_case()
+        allocation = BeneficiaryAllocation.objects.create(
+            beneficiary=self.beneficiary_rel,
+            allocation_type=BeneficiaryAllocation.AllocationType.SPECIFIC_ITEM,
+            description='Family land',
+            review_status=BeneficiaryAllocation.ReviewStatus.VERIFIED,
+            reviewed_by=self.lawyer,
+            reviewed_case=case,
+            reviewed_at=timezone.now(),
+        )
+        self.client.force_authenticate(self.lawyer)
+        response = self.client.post(
+            reverse('verification:case-authorize-release', kwargs={'pk': case.pk}),
+            {'allocation_ids': [allocation.pk]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        outbox = BeneficiaryNotificationOutbox.objects.get(release__allocation=allocation)
+
+        with patch('apps.verification.services.send_mail', side_effect=RuntimeError('mail unavailable')):
+            self.assertFalse(dispatch_beneficiary_notification(outbox.pk))
+        release = BeneficiaryRelease.objects.get(allocation=allocation)
+        outbox.refresh_from_db()
+        self.assertEqual(release.status, BeneficiaryRelease.Status.AUTHORIZED)
+        self.assertEqual(outbox.status, BeneficiaryNotificationOutbox.Status.FAILED)
+        self.assertIsNone(release.access_token_hash)
+
+        BeneficiaryNotificationOutbox.objects.filter(pk=outbox.pk).update(available_at=timezone.now() - timedelta(minutes=1))
+        with patch('apps.verification.services.send_mail', return_value=1) as send_mail:
+            self.assertTrue(dispatch_beneficiary_notification(outbox.pk))
+        release.refresh_from_db()
+        outbox.refresh_from_db()
+        self.assertEqual(release.status, BeneficiaryRelease.Status.AUTHORIZED)
+        self.assertEqual(outbox.status, BeneficiaryNotificationOutbox.Status.DELIVERED)
+        self.assertIsNotNone(release.access_token_hash)
+        self.assertEqual(send_mail.call_count, 1)
+        self.assertNotIn('Family land', send_mail.call_args.args[1])
+
     # -------------------------------------------------------------------------
     # Phase 3: Service authorization and object-level access audit
     # -------------------------------------------------------------------------
@@ -980,7 +1096,12 @@ class VerificationModuleTests(APITestCase):
         self.client.force_authenticate(self.other_lawyer)
         res = self.client.post(reverse('verification:case-begin-review', kwargs={'pk': case.pk}))
         self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(AuditEvent.objects.count(), before)
+        self.assertEqual(AuditEvent.objects.count(), before + 1)
+        self.assertTrue(AuditEvent.objects.filter(
+            event_type=AuditEvent.EventType.SECURITY_ALERT,
+            details__event='assigned_lawyer_action_denied',
+            details__case_id=case.pk,
+        ).exists())
         self.assertEqual(self._audit_events_for(AuditEvent.EventType.VERIFICATION_REVIEW_BEGUN).count(), 0)
 
     def test_sufficiency_change_records_sufficiency_changed_event_with_old_and_new_values(self):

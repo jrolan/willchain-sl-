@@ -23,7 +23,12 @@ Business logic services for Module 5: Verification & Legal Workflow.
 #        The system does not verify credentials beyond the LAWYER_VERIFIER role flag.
 """
 
+from datetime import timedelta
+from urllib.parse import quote
+
+from django.conf import settings
 from django.core.exceptions import PermissionDenied
+from django.core.mail import send_mail
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -31,7 +36,7 @@ from rest_framework.exceptions import ValidationError
 from apps.accounts.models import User
 from apps.accounts.services import log_audit_event
 from apps.audit.models import AuditEvent
-from apps.beneficiaries.models import WillBeneficiary
+from apps.beneficiaries.models import BeneficiaryAllocation, WillBeneficiary
 from apps.documents.storage import private_document_storage
 from apps.documents.validation import validate_upload
 from apps.wills.models import Will
@@ -39,6 +44,8 @@ from apps.wills.models import Will
 from .models import (
     CaseEvidence,
     CaseStatusHistory,
+    BeneficiaryNotificationOutbox,
+    BeneficiaryRelease,
     EligibilityAssessment,
     VerificationCase,
     WillDisclosureAuthorization,
@@ -664,3 +671,243 @@ def revoke_will_disclosure(case, actor, request=None):
         details={'case_id': case.pk, 'disclosure_auth_id': auth.pk},
     )
     return auth
+
+
+@transaction.atomic
+def review_beneficiary_allocation(case, allocation, actor, review_status, request=None):
+    if actor != case.assigned_lawyer or actor.role != User.Role.LAWYER_VERIFIER:
+        raise PermissionDenied('Only the assigned lawyer can review allocations for this case.')
+    if (
+        case.case_type != VerificationCase.CaseType.POST_DEATH_VERIFY
+        or case.status not in {
+            VerificationCase.Status.UNDER_REVIEW,
+            VerificationCase.Status.APPROVED,
+        }
+    ):
+        raise ValidationError('Allocation review requires an active or approved post-death verification case.')
+    if allocation.beneficiary.will_id != case.will_id:
+        raise PermissionDenied('Allocation is not part of this verification case.')
+    if review_status not in {
+        BeneficiaryAllocation.ReviewStatus.VERIFIED,
+        BeneficiaryAllocation.ReviewStatus.WITHHELD,
+    }:
+        raise ValidationError({'review_status': 'Review status must be VERIFIED or WITHHELD.'})
+    if hasattr(allocation, 'release_authorization'):
+        raise ValidationError('An allocation cannot be changed after release authorization.')
+
+    allocation.review_status = review_status
+    allocation.reviewed_by = actor
+    allocation.reviewed_case = case
+    allocation.reviewed_at = timezone.now()
+    allocation.save(update_fields=['review_status', 'reviewed_by', 'reviewed_case', 'reviewed_at', 'updated_at'])
+    log_audit_event(
+        AuditEvent.EventType.BENEFICIARY_ALLOCATION_REVIEWED,
+        request=request,
+        actor=actor,
+        target_user=case.initiator,
+        details={
+            'case_id': case.pk,
+            'allocation_id': allocation.pk,
+            'relationship_id': allocation.beneficiary_id,
+            'review_status': review_status,
+        },
+    )
+    return allocation
+
+
+def get_case_beneficiary_allocations(case, actor):
+    if (
+        actor != case.assigned_lawyer and actor.role != User.Role.ADMINISTRATOR
+    ) or (actor == case.assigned_lawyer and actor.role != User.Role.LAWYER_VERIFIER):
+        raise PermissionDenied('Only the assigned lawyer or an administrator can view allocations for this case.')
+    if (
+        case.case_type != VerificationCase.CaseType.POST_DEATH_VERIFY
+        or case.status not in {
+            VerificationCase.Status.UNDER_REVIEW,
+            VerificationCase.Status.APPROVED,
+        }
+    ):
+        raise ValidationError('Allocations are available only during an active or approved post-death verification case.')
+    return BeneficiaryAllocation.objects.filter(
+        beneficiary__will_id=case.will_id,
+        beneficiary__relationship_type__in=[
+            WillBeneficiary.RelationshipType.PRIMARY,
+            WillBeneficiary.RelationshipType.CONTINGENT,
+            WillBeneficiary.RelationshipType.RESIDUAL,
+        ],
+        beneficiary__status__in=[WillBeneficiary.Status.PENDING, WillBeneficiary.Status.ACTIVE],
+    ).select_related('beneficiary').order_by('pk')
+
+
+@transaction.atomic
+def authorize_beneficiary_releases(case, allocation_ids, actor, request=None):
+    if (
+        actor != case.assigned_lawyer
+        or actor.role != User.Role.LAWYER_VERIFIER
+        or actor.account_status != User.AccountStatus.ACTIVE
+    ):
+        raise PermissionDenied('Only the active lawyer assigned to this case can authorize beneficiary releases.')
+    if (
+        case.case_type != VerificationCase.CaseType.POST_DEATH_VERIFY
+        or case.status != VerificationCase.Status.APPROVED
+        or case.will_id is None
+        or case.assigned_lawyer is None
+        or case.assigned_lawyer.role != User.Role.LAWYER_VERIFIER
+        or case.assigned_lawyer.account_status != User.AccountStatus.ACTIVE
+    ):
+        raise ValidationError('Releases require an approved post-death verification case linked to a will.')
+    if not allocation_ids or len(allocation_ids) != len(set(allocation_ids)):
+        raise ValidationError({'allocation_ids': 'Provide a non-empty list of unique allocation IDs.'})
+
+    allocations = list(
+        BeneficiaryAllocation.objects.select_for_update()
+        .select_related('beneficiary')
+        .filter(pk__in=allocation_ids, beneficiary__will_id=case.will_id)
+    )
+    if len(allocations) != len(allocation_ids):
+        raise ValidationError({'allocation_ids': 'One or more allocations are unavailable for this case.'})
+
+    releases = []
+    outbox_ids = []
+    for allocation in allocations:
+        if allocation.review_status != BeneficiaryAllocation.ReviewStatus.VERIFIED:
+            raise ValidationError({'allocation_ids': 'Every released allocation must be reviewed as VERIFIED.'})
+        if (
+            allocation.reviewed_case_id != case.pk
+            or allocation.reviewed_by_id != case.assigned_lawyer_id
+            or allocation.reviewed_at is None
+        ):
+            raise ValidationError({'allocation_ids': 'Every released allocation must have a completed review by the assigned lawyer.'})
+        if allocation.beneficiary.status not in (WillBeneficiary.Status.PENDING, WillBeneficiary.Status.ACTIVE):
+            raise ValidationError({'allocation_ids': 'Allocations for inactive beneficiary relationships cannot be released.'})
+
+        existing = BeneficiaryRelease.objects.select_for_update().filter(allocation=allocation).first()
+        if existing and existing.case_id != case.pk:
+            raise ValidationError({'allocation_ids': 'An allocation cannot be released under multiple verification cases.'})
+        release, created = BeneficiaryRelease.objects.get_or_create(
+            allocation=allocation,
+            defaults={
+                'case': case,
+                'authorized_by': actor,
+                'status': BeneficiaryRelease.Status.AUTHORIZED,
+            },
+        )
+        if release.status != BeneficiaryRelease.Status.AUTHORIZED:
+            raise ValidationError({'allocation_ids': 'A revoked release cannot be re-authorized through this endpoint.'})
+        outbox, _ = BeneficiaryNotificationOutbox.objects.get_or_create(
+            release=release,
+            defaults={
+                'recipient_email': allocation.beneficiary.normalized_email,
+                'available_at': timezone.now(),
+            },
+        )
+        if created:
+            log_audit_event(
+                AuditEvent.EventType.BENEFICIARY_RELEASE_AUTHORIZED,
+                request=request,
+                actor=actor,
+                target_user=allocation.beneficiary.beneficiary_user,
+                details={
+                    'case_id': case.pk,
+                    'release_id': release.pk,
+                    'allocation_id': allocation.pk,
+                    'relationship_id': allocation.beneficiary_id,
+                },
+            )
+        releases.append(release)
+        if outbox.status == BeneficiaryNotificationOutbox.Status.PENDING:
+            outbox_ids.append(outbox.pk)
+
+    for outbox_id in outbox_ids:
+        transaction.on_commit(lambda notification_id=outbox_id: dispatch_beneficiary_notification(notification_id))
+    return releases
+
+
+def dispatch_beneficiary_notification(outbox_id):
+    now = timezone.now()
+    with transaction.atomic():
+        outbox = (
+            BeneficiaryNotificationOutbox.objects.select_for_update()
+            .select_related('release__allocation__beneficiary', 'release__case')
+            .filter(pk=outbox_id)
+            .first()
+        )
+        if not outbox or outbox.status == BeneficiaryNotificationOutbox.Status.DELIVERED:
+            return False
+        if (
+            outbox.status in {BeneficiaryNotificationOutbox.Status.PENDING, BeneficiaryNotificationOutbox.Status.FAILED}
+            and outbox.available_at > now
+        ):
+            return False
+        if outbox.status == BeneficiaryNotificationOutbox.Status.PROCESSING and outbox.updated_at > now - timedelta(minutes=10):
+            return False
+        if outbox.release.status != BeneficiaryRelease.Status.AUTHORIZED:
+            return False
+
+        raw_token = BeneficiaryRelease.generate_access_token()
+        outbox.release.access_token_hash = BeneficiaryRelease.hash_access_token(raw_token)
+        outbox.release.token_expires_at = now + timedelta(days=30)
+        outbox.release.save(update_fields=['access_token_hash', 'token_expires_at', 'updated_at'])
+        outbox.status = BeneficiaryNotificationOutbox.Status.PROCESSING
+        outbox.attempt_count += 1
+        outbox.last_error = ''
+        outbox.save(update_fields=['status', 'attempt_count', 'last_error', 'updated_at'])
+        log_audit_event(
+            AuditEvent.EventType.SECURITY_ALERT,
+            actor=outbox.release.authorized_by,
+            target_user=outbox.release.allocation.beneficiary.beneficiary_user,
+            details={
+                'event': 'beneficiary_notification_attempted',
+                'release_id': outbox.release_id,
+                'outbox_id': outbox.pk,
+                'attempt': outbox.attempt_count,
+            },
+        )
+
+    claim_url = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/beneficiary/release#token={quote(raw_token)}"
+    try:
+        if settings.EMAIL_BACKEND == 'django.core.mail.backends.console.EmailBackend':
+            raise RuntimeError('A non-console email backend is required for beneficiary release delivery.')
+        accepted = send_mail(
+            'Your WillChain allocation is ready',
+            'Information has been authorized for secure access on WillChain SL. Sign in or create an account to view your allocation.\n\n'
+            f'Open this secure link: {claim_url}\n\n'
+            'This link expires in 30 days.',
+            settings.DEFAULT_FROM_EMAIL,
+            [outbox.recipient_email],
+            fail_silently=False,
+        )
+        if accepted != 1:
+            raise RuntimeError('Notification provider did not accept the message.')
+    except Exception as exc:
+        with transaction.atomic():
+            failed = BeneficiaryNotificationOutbox.objects.select_for_update().get(pk=outbox_id)
+            failed.status = BeneficiaryNotificationOutbox.Status.FAILED
+            failed.last_error = type(exc).__name__[:128]
+            failed.available_at = timezone.now() + timedelta(minutes=min(2 ** min(failed.attempt_count, 10), 1440))
+            failed.save(update_fields=['status', 'last_error', 'available_at', 'updated_at'])
+            failed.release.access_token_hash = None
+            failed.release.token_expires_at = None
+            failed.release.save(update_fields=['access_token_hash', 'token_expires_at', 'updated_at'])
+            log_audit_event(
+                AuditEvent.EventType.SECURITY_ALERT,
+                actor=failed.release.authorized_by,
+                target_user=failed.release.allocation.beneficiary.beneficiary_user,
+                details={'event': 'beneficiary_notification_failed', 'release_id': failed.release_id, 'outbox_id': failed.pk, 'error_type': failed.last_error},
+            )
+        return False
+
+    with transaction.atomic():
+        delivered = BeneficiaryNotificationOutbox.objects.select_for_update().get(pk=outbox_id)
+        delivered.status = BeneficiaryNotificationOutbox.Status.DELIVERED
+        delivered.delivered_at = timezone.now()
+        delivered.last_error = ''
+        delivered.save(update_fields=['status', 'delivered_at', 'last_error', 'updated_at'])
+        log_audit_event(
+            AuditEvent.EventType.SECURITY_ALERT,
+            actor=delivered.release.authorized_by,
+            target_user=delivered.release.allocation.beneficiary.beneficiary_user,
+            details={'event': 'beneficiary_notification_delivered', 'release_id': delivered.release_id, 'outbox_id': delivered.pk},
+        )
+    return True
+ 

@@ -11,6 +11,7 @@ Protects against will-content and title exposure:
 from rest_framework import serializers
 
 from apps.accounts.models import User
+from apps.beneficiaries.models import BeneficiaryAllocation
 from apps.wills.models import Will
 
 from .models import (
@@ -256,3 +257,43 @@ class Module8StatusSerializer(serializers.Serializer):
     case_type = serializers.CharField()
     status = serializers.CharField()
     approved_at = serializers.DateTimeField(allow_null=True)
+
+
+class BeneficiaryAllocationReviewSerializer(serializers.Serializer):
+    review_status = serializers.ChoiceField(choices=('VERIFIED', 'WITHHELD'))
+
+
+class LawyerBeneficiaryAllocationSerializer(serializers.ModelSerializer):
+    beneficiary_name = serializers.CharField(source='beneficiary.full_name', read_only=True)
+
+    class Meta:
+        model = BeneficiaryAllocation
+        fields = (
+            'id',
+            'beneficiary_name',
+            'allocation_type',
+            'description',
+            'amount',
+            'currency_code',
+            'percentage',
+            'review_status',
+            'reviewed_at',
+        )
+        read_only_fields = fields
+
+
+class BeneficiaryReleaseAuthorizationSerializer(serializers.Serializer):
+    allocation_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+        max_length=100,
+    )
+
+
+class BeneficiaryReleaseStatusSerializer(serializers.Serializer):
+    release_id = serializers.IntegerField()
+    allocation_id = serializers.IntegerField()
+    allocation_type = serializers.CharField()
+    status = serializers.CharField()
+    notification_status = serializers.CharField(allow_null=True)
+    authorized_at = serializers.DateTimeField()

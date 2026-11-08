@@ -29,6 +29,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 	last_name = models.CharField(max_length=150)
 	phone_number = models.CharField(max_length=30, blank=True)
 	avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
+	google_sub = models.CharField(max_length=255, blank=True, null=True, unique=True, db_index=True)
 	role = models.CharField(max_length=32, choices=Role.choices, default=Role.OWNER, db_index=True)
 	account_status = models.CharField(
 		max_length=32,

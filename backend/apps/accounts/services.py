@@ -1,12 +1,23 @@
+import logging
+
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 
+try:
+    from google.oauth2 import id_token as google_id_token
+    from google.auth.transport import requests as google_requests
+except ImportError:  # pragma: no cover - optional dependency fallback
+    google_id_token = None
+    google_requests = None
+
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
 from apps.audit.models import AuditEvent
+
+logger = logging.getLogger(__name__)
 
 
 def log_audit_event(event_type, request=None, actor=None, target_user=None, details=None):
@@ -20,17 +31,14 @@ def log_audit_event(event_type, request=None, actor=None, target_user=None, deta
             ip_address = ip_address.split(',')[0].strip()
         user_agent = request.META.get('HTTP_USER_AGENT', '')[:512]
 
-    try:
-        return AuditEvent.objects.create(
-            event_type=event_type,
-            actor=actor,
-            target_user=target_user,
-            ip_address=ip_address or None,
-            user_agent=user_agent,
-            details=details or {},
-        )
-    except Exception:
-        return None
+    return AuditEvent.objects.create(
+        event_type=event_type,
+        actor=actor,
+        target_user=target_user,
+        ip_address=ip_address or None,
+        user_agent=user_agent,
+        details=details or {},
+    )
 
 
 def revoke_all_refresh_tokens(user):
@@ -83,3 +91,24 @@ def send_invitation_email(invitation, raw_token):
         [invitation.email],
         fail_silently=False,
     )
+
+
+def verify_google_id_token(id_token_value, client_id):
+    if not id_token_value or not client_id:
+        raise ValueError('Google OAuth client configuration is missing.')
+
+    try:
+        if google_id_token is None or google_requests is None:
+            raise ValueError('Google token verification is unavailable.')
+        return google_id_token.verify_oauth2_token(
+            id_token_value,
+            google_requests.Request(),
+            client_id,
+            clock_skew_in_seconds=10,
+        )
+    except ValueError as exc:
+        logger.warning('Google ID token verification rejected (%s).', type(exc).__name__)
+        raise ValueError('Google ID token is invalid.') from exc
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.warning('Google ID token verification errored (%s).', type(exc).__name__)
+        raise ValueError('Google ID token is invalid.') from exc

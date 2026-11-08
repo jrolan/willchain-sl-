@@ -1,12 +1,12 @@
+import secrets
+
 from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.middleware.csrf import get_token
 from django.utils import timezone
-from django.utils.decorators import method_decorator
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
-from django.views.decorators.csrf import csrf_protect
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
@@ -20,6 +20,7 @@ from .permissions import IsActiveAccount, IsOwner, IsTestator
 from .serializers import (
 	ChangePasswordSerializer,
 	ForgotPasswordSerializer,
+	GoogleIdTokenSerializer,
 	InvitationSerializer,
 	LoginSerializer,
 	RegistrationSerializer,
@@ -33,6 +34,7 @@ from .services import (
 	send_email_verification,
 	send_invitation_email,
 	send_password_reset,
+	verify_google_id_token,
 )
 
 REFRESH_COOKIE_NAME = 'willchain_refresh'
@@ -105,7 +107,14 @@ class LoginView(APIView):
 		return response
 
 
-@method_decorator(csrf_protect, name='dispatch')
+def issue_jwt_response(user, request):
+	refresh = RefreshToken.for_user(user)
+	response = Response({'data': {'access': str(refresh.access_token), 'user': UserSerializer(user).data}})
+	set_refresh_cookie(response, refresh)
+	response.set_cookie('csrftoken', get_token(request), samesite='Lax')
+	return response
+
+
 class RefreshView(APIView):
 	permission_classes = (permissions.AllowAny,)
 
@@ -310,6 +319,253 @@ class InvitationListView(generics.ListCreateAPIView):
 			},
 			status=status.HTTP_201_CREATED,
 		)
+
+
+class GoogleLoginView(APIView):
+	permission_classes = (permissions.AllowAny,)
+	throttle_scope = 'auth'
+
+	def post(self, request):
+		serializer = GoogleIdTokenSerializer(data=request.data)
+		if not serializer.is_valid():
+			log_audit_event(
+				AuditEvent.EventType.LOGIN_FAILED,
+				request=request,
+				details={'auth_provider': 'google', 'reason': 'invalid_request'},
+			)
+			return Response(
+				{'error': {'code': 'INVALID_GOOGLE_ID_TOKEN', 'message': 'Google ID token is required and must be valid.'}},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		try:
+			payload = verify_google_id_token(
+				serializer.validated_data['id_token'],
+				getattr(settings, 'GOOGLE_OAUTH2_CLIENT_ID', ''),
+			)
+		except ValueError:
+			log_audit_event(
+				AuditEvent.EventType.LOGIN_FAILED,
+				request=request,
+				details={'auth_provider': 'google', 'reason': 'invalid_token'},
+			)
+			return Response(
+				{'error': {'code': 'INVALID_GOOGLE_ID_TOKEN', 'message': 'Google ID token could not be verified.'}},
+				status=status.HTTP_401_UNAUTHORIZED,
+			)
+
+		email = (payload.get('email') or '').strip().lower()
+		google_sub = str(payload.get('sub') or '').strip()
+		if not email or not google_sub:
+			log_audit_event(
+				AuditEvent.EventType.LOGIN_FAILED,
+				request=request,
+				details={'auth_provider': 'google', 'reason': 'missing_identity_fields'},
+			)
+			return Response(
+				{'error': {'code': 'INVALID_GOOGLE_ID_TOKEN', 'message': 'Google token did not include the required identity fields.'}},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+		if payload.get('email_verified') is not True:
+			log_audit_event(
+				AuditEvent.EventType.LOGIN_FAILED,
+				request=request,
+				details={'auth_provider': 'google', 'reason': 'unverified_email'},
+			)
+			return Response(
+				{'error': {'code': 'GOOGLE_EMAIL_NOT_VERIFIED', 'message': 'Google email must be verified before login.'}},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		user = User.objects.filter(google_sub=google_sub).first()
+		if user is None:
+			user = User.objects.filter(email__iexact=email).first()
+		if user is not None:
+			if user.google_sub == google_sub and user.email.lower() != email.lower():
+				log_audit_event(
+					AuditEvent.EventType.LOGIN_FAILED,
+					request=request,
+					target_user=user,
+					details={'auth_provider': 'google', 'reason': 'identity_email_conflict'},
+				)
+				return Response(
+					{'error': {'code': 'GOOGLE_ACCOUNT_CONFLICT', 'message': 'This Google identity is linked to a different email address.'}},
+					status=status.HTTP_409_CONFLICT,
+				)
+			if user.google_sub and user.google_sub != google_sub:
+				log_audit_event(
+					AuditEvent.EventType.LOGIN_FAILED,
+					request=request,
+					target_user=user,
+					details={'auth_provider': 'google', 'reason': 'identity_conflict'},
+				)
+				return Response(
+					{'error': {'code': 'GOOGLE_ACCOUNT_CONFLICT', 'message': 'This Google account is already linked to a different user.'}},
+					status=status.HTTP_409_CONFLICT,
+				)
+			if user.account_status != User.AccountStatus.ACTIVE or not user.email_verified:
+				log_audit_event(
+					AuditEvent.EventType.LOGIN_FAILED,
+					request=request,
+					target_user=user,
+					details={'auth_provider': 'google', 'reason': 'account_inactive'},
+				)
+				return Response(
+					{'error': {'code': 'ACCOUNT_INACTIVE', 'message': 'Account is not active. Verify the email before continuing.'}},
+					status=status.HTTP_401_UNAUTHORIZED,
+				)
+			try:
+				user.google_sub = google_sub
+				user.save(update_fields=['google_sub', 'updated_at'])
+			except IntegrityError:
+				return Response(
+					{'error': {'code': 'GOOGLE_ACCOUNT_CONFLICT', 'message': 'This Google account is already linked to a different user.'}},
+					status=status.HTTP_409_CONFLICT,
+				)
+		else:
+			user = User.objects.create_user(
+				email=email,
+				first_name=payload.get('given_name') or 'Google',
+				last_name=payload.get('family_name') or 'User',
+				password=secrets.token_urlsafe(32),
+				google_sub=google_sub,
+				role=User.Role.OWNER,
+				account_status=User.AccountStatus.PENDING_VERIFICATION,
+				email_verified=False,
+			)
+			user.set_unusable_password()
+			user.save(update_fields=['password', 'updated_at'])
+			send_email_verification(user)
+			log_audit_event(
+				AuditEvent.EventType.USER_REGISTERED,
+				request=request,
+				target_user=user,
+				details={'role': user.role, 'registration_source': 'google_login'},
+			)
+			return Response(
+				{
+					'data': UserSerializer(user).data,
+					'message': 'Account created via Google. Complete email verification before logging in.',
+				},
+				status=status.HTTP_201_CREATED,
+			)
+
+		log_audit_event(
+			AuditEvent.EventType.LOGIN_SUCCESS,
+			request=request,
+			actor=user,
+			details={'email': user.email, 'role': user.role, 'auth_provider': 'google'},
+		)
+		return issue_jwt_response(user, request)
+
+
+class GoogleLinkView(APIView):
+	permission_classes = (IsActiveAccount,)
+
+	def post(self, request):
+		serializer = GoogleIdTokenSerializer(data=request.data)
+		if not serializer.is_valid():
+			log_audit_event(
+				AuditEvent.EventType.LOGIN_FAILED,
+				request=request,
+				actor=request.user,
+				details={'auth_provider': 'google_link', 'reason': 'invalid_request'},
+			)
+			return Response(
+				{'error': {'code': 'INVALID_GOOGLE_ID_TOKEN', 'message': 'Google ID token is required and must be valid.'}},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+		try:
+			payload = verify_google_id_token(
+				serializer.validated_data['id_token'],
+				getattr(settings, 'GOOGLE_OAUTH2_CLIENT_ID', ''),
+			)
+		except ValueError:
+			log_audit_event(
+				AuditEvent.EventType.LOGIN_FAILED,
+				request=request,
+				actor=request.user,
+				details={'auth_provider': 'google_link', 'reason': 'invalid_token'},
+			)
+			return Response(
+				{'error': {'code': 'INVALID_GOOGLE_ID_TOKEN', 'message': 'Google ID token could not be verified.'}},
+				status=status.HTTP_401_UNAUTHORIZED,
+			)
+
+		email = (payload.get('email') or '').strip().lower()
+		google_sub = str(payload.get('sub') or '').strip()
+		if not google_sub or payload.get('email_verified') is not True:
+			log_audit_event(
+				AuditEvent.EventType.LOGIN_FAILED,
+				request=request,
+				actor=request.user,
+				details={'auth_provider': 'google_link', 'reason': 'invalid_identity'},
+			)
+			return Response(
+				{'error': {'code': 'INVALID_GOOGLE_ID_TOKEN', 'message': 'Google identity could not be verified.'}},
+				status=status.HTTP_401_UNAUTHORIZED,
+			)
+		if email.lower() != request.user.email.lower():
+			return Response(
+				{'error': {'code': 'GOOGLE_EMAIL_MISMATCH', 'message': 'This Google account is not linked to the signed-in user.'}},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+		if payload.get('email_verified') is not True:
+			return Response(
+				{'error': {'code': 'GOOGLE_EMAIL_NOT_VERIFIED', 'message': 'Google email must be verified before linking.'}},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+		if request.user.google_sub and request.user.google_sub != google_sub:
+			return Response(
+				{'error': {'code': 'GOOGLE_ACCOUNT_CONFLICT', 'message': 'This account is already linked to a different Google account.'}},
+				status=status.HTTP_409_CONFLICT,
+			)
+		if User.objects.filter(google_sub=google_sub).exclude(pk=request.user.pk).exists():
+			return Response(
+				{'error': {'code': 'GOOGLE_ACCOUNT_CONFLICT', 'message': 'This Google account is already linked to a different user.'}},
+				status=status.HTTP_409_CONFLICT,
+			)
+		if not request.user.email_verified:
+			return Response(
+				{'error': {'code': 'EMAIL_NOT_VERIFIED', 'message': 'Verify your email before linking a Google account.'}},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+
+		try:
+			request.user.google_sub = google_sub
+			request.user.save(update_fields=['google_sub', 'updated_at'])
+		except IntegrityError:
+			return Response(
+				{'error': {'code': 'GOOGLE_ACCOUNT_CONFLICT', 'message': 'This Google account is already linked to a different user.'}},
+				status=status.HTTP_409_CONFLICT,
+			)
+		log_audit_event(
+			AuditEvent.EventType.LOGIN_SUCCESS,
+			request=request,
+			actor=request.user,
+			details={'email': request.user.email, 'auth_provider': 'google_link'},
+		)
+		return Response({'data': UserSerializer(request.user).data, 'message': 'Google account linked successfully.'})
+
+
+class GoogleUnlinkView(APIView):
+	permission_classes = (IsActiveAccount,)
+
+	def post(self, request):
+		if not request.user.google_sub:
+			return Response(
+				{'error': {'code': 'NO_GOOGLE_LINK', 'message': 'This account is not linked to Google.'}},
+				status=status.HTTP_400_BAD_REQUEST,
+			)
+		request.user.google_sub = None
+		request.user.save(update_fields=['google_sub', 'updated_at'])
+		log_audit_event(
+			AuditEvent.EventType.LOGIN_SUCCESS,
+			request=request,
+			actor=request.user,
+			details={'email': request.user.email, 'auth_provider': 'google_unlink'},
+		)
+		return Response({'data': UserSerializer(request.user).data, 'message': 'Google account unlinked successfully.'})
 
 
 class AcceptInvitationView(APIView):

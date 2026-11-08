@@ -44,6 +44,14 @@ export interface Will {
   updated_at: string;
 }
 
+export interface LawyerWillContent {
+  title: string;
+  content: WillContent;
+  status: WillStatus;
+  version: number;
+  finalized_at: string | null;
+}
+
 export interface WillPayload {
   title: string;
   content: WillContent;

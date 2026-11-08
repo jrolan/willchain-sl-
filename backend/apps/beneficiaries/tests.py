@@ -10,8 +10,9 @@ from django.core import mail
 from django.test import override_settings
 from apps.accounts.models import User
 from apps.audit.models import AuditEvent
+from apps.verification.models import BeneficiaryRelease, VerificationCase
 from apps.wills.models import Will
-from .models import BeneficiaryInvitation, WillBeneficiary
+from .models import BeneficiaryAllocation, BeneficiaryInvitation, WillBeneficiary
 
 
 class BeneficiaryModuleTests(APITestCase):
@@ -35,7 +36,7 @@ class BeneficiaryModuleTests(APITestCase):
         return {'HTTP_AUTHORIZATION': f'Bearer {token}'}
 
     @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
-    def test_owner_can_create_beneficiary_and_invitation(self):
+    def test_owner_can_add_beneficiary_without_early_notification(self):
         owner = self.active_user()
         will = Will.objects.create(owner=owner, title='Test Will', content={'body': 'test'})
 
@@ -49,10 +50,8 @@ class BeneficiaryModuleTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['data']['recipient_email'], 'mary@example.com')
         self.assertTrue(WillBeneficiary.objects.filter(will=will, normalized_email='mary@example.com').exists())
-        self.assertTrue(BeneficiaryInvitation.objects.filter(relationship__will=will, recipient_email='mary@example.com').exists())
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertEqual(mail.outbox[0].to, ['mary@example.com'])
-        self.assertIn('/beneficiary-invitation?token=', mail.outbox[0].body)
+        self.assertFalse(BeneficiaryInvitation.objects.filter(relationship__will=will).exists())
+        self.assertEqual(len(mail.outbox), 0)
 
     def test_owner_beneficiary_list_includes_linked_profile_avatar(self):
         owner = self.active_user()
@@ -245,7 +244,7 @@ class BeneficiaryModuleTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_invitation_preview_masks_recipient_and_exposes_no_will_id(self):
+    def test_legacy_invitation_preview_is_blocked_before_release(self):
         owner = self.active_user(email='owner-masked-preview@example.com')
         recipient = self.active_user(email='private.recipient@example.com', role=User.Role.MEMBER)
         will = Will.objects.create(owner=owner, title='Private Will', content={'body': 'private'})
@@ -258,10 +257,7 @@ class BeneficiaryModuleTests(APITestCase):
             **self.auth_headers(recipient),
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['recipient_email'], 'p***@example.com')
-        self.assertNotIn('will', response.data)
-        self.assertNotIn('id', response.data)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
     def test_module_three_audit_failure_rolls_back_relationship_and_sends_no_email(self):
@@ -280,7 +276,7 @@ class BeneficiaryModuleTests(APITestCase):
         self.assertFalse(WillBeneficiary.objects.filter(will=will).exists())
         self.assertEqual(len(mail.outbox), 0)
 
-    def test_invitation_accept_activates_relationship_for_matching_user(self):
+    def test_legacy_invitation_cannot_activate_relationship_before_release(self):
         owner = self.active_user(email='owner5@example.com')
         recipient = self.active_user(email='mary@example.com', role=User.Role.BENEFICIARY)
         will = Will.objects.create(owner=owner, title='Will', content={'body': 'test'})
@@ -294,12 +290,12 @@ class BeneficiaryModuleTests(APITestCase):
             format='json',
             **self.auth_headers(recipient),
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         relationship.refresh_from_db()
-        self.assertEqual(relationship.status, WillBeneficiary.Status.ACTIVE)
+        self.assertEqual(relationship.status, WillBeneficiary.Status.PENDING)
         invitation.refresh_from_db()
-        self.assertEqual(invitation.status, BeneficiaryInvitation.Status.ACCEPTED)
-        self.assertIsNone(invitation.token_hash)
+        self.assertEqual(invitation.status, BeneficiaryInvitation.Status.PENDING)
+        self.assertIsNotNone(invitation.token_hash)
 
     def test_invitation_accept_rejects_different_account(self):
         owner = self.active_user(email='owner6@example.com')
@@ -416,7 +412,7 @@ class BeneficiaryModuleTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_invited_registration_creates_unverified_member_without_accepting_invitation(self):
+    def test_legacy_invitation_registration_is_blocked_before_release(self):
         owner = self.active_user(email='owner-register-beneficiary@example.com')
         will = Will.objects.create(owner=owner, title='Will', content={'body': 'test'})
         relationship = WillBeneficiary.objects.create(
@@ -444,16 +440,179 @@ class BeneficiaryModuleTests(APITestCase):
             format='json',
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        user = User.objects.get(email=relationship.normalized_email)
-        self.assertEqual(user.role, User.Role.MEMBER)
-        self.assertEqual(user.account_status, User.AccountStatus.PENDING_VERIFICATION)
-        self.assertFalse(user.email_verified)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(User.objects.filter(email=relationship.normalized_email).exists())
         relationship.refresh_from_db()
         invitation.refresh_from_db()
         self.assertEqual(relationship.status, WillBeneficiary.Status.PENDING)
         self.assertEqual(invitation.status, BeneficiaryInvitation.Status.PENDING)
         self.assertNotIn('new-beneficiary-registration-token', str(response.data))
+
+    def test_allocation_validation_requires_type_specific_fields(self):
+        owner = self.active_user(email='allocation-owner@example.com')
+        will = Will.objects.create(owner=owner, title='Will', content={})
+        relationship = WillBeneficiary.objects.create(will=will, normalized_email='allocation@example.com')
+        url = reverse('beneficiaries:will-beneficiary-allocations', args=[will.pk, relationship.pk])
+
+        bad_percentage = self.client.post(
+            url,
+            {'allocation_type': 'PERCENTAGE', 'percentage': '30.00', 'amount': '5.00', 'currency_code': 'SLL'},
+            format='json',
+            **self.auth_headers(owner),
+        )
+        good_item = self.client.post(
+            url,
+            {'allocation_type': 'SPECIFIC_ITEM', 'description': 'Family land'},
+            format='json',
+            **self.auth_headers(owner),
+        )
+
+        self.assertEqual(bad_percentage.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(good_item.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(BeneficiaryAllocation.objects.filter(beneficiary=relationship).count(), 1)
+
+    def test_beneficiary_sees_only_own_authorized_allocation_and_idor_is_hidden(self):
+        owner = self.active_user(email='allocation-access-owner@example.com')
+        beneficiary_a = self.active_user(email='allocation-a@example.com', role=User.Role.BENEFICIARY)
+        beneficiary_b = self.active_user(email='allocation-b@example.com', role=User.Role.BENEFICIARY)
+        will = Will.objects.create(owner=owner, title='Estate', content={'body': 'private full will'})
+        case = VerificationCase.objects.create(
+            will=will,
+            initiator=beneficiary_a,
+            case_type=VerificationCase.CaseType.POST_DEATH_VERIFY,
+            submission_type=VerificationCase.SubmissionType.BENEFICIARY_CLAIM,
+            status=VerificationCase.Status.APPROVED,
+        )
+        relationships = [
+            WillBeneficiary.objects.create(
+                will=will,
+                beneficiary_user=user,
+                normalized_email=user.email,
+                status=WillBeneficiary.Status.ACTIVE,
+            )
+            for user in (beneficiary_a, beneficiary_b)
+        ]
+        allocations = [
+            BeneficiaryAllocation.objects.create(
+                beneficiary=relationship,
+                allocation_type=BeneficiaryAllocation.AllocationType.SPECIFIC_ITEM,
+                description=f'Private item {index}',
+                review_status=BeneficiaryAllocation.ReviewStatus.VERIFIED,
+                reviewed_case=case,
+            )
+            for index, relationship in enumerate(relationships)
+        ]
+        releases = [
+            BeneficiaryRelease.objects.create(
+                case=case,
+                allocation=allocation,
+                authorized_by=owner,
+            )
+            for allocation in allocations
+        ]
+
+        self.client.force_authenticate(beneficiary_a)
+        list_response = self.client.get(reverse('beneficiaries:my-beneficiary-allocations'))
+        other_detail = self.client.get(
+            reverse('beneficiaries:my-beneficiary-allocation-detail', args=[allocations[1].pk]),
+        )
+
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row['id'] for row in list_response.data['data']], [allocations[0].pk])
+        self.assertEqual(other_detail.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertNotIn('content', list_response.data['data'][0])
+        self.assertNotIn('beneficiary', list_response.data['data'][0])
+        self.assertNotIn('access_token_hash', str(releases[0]))
+
+    def test_release_claim_registers_and_links_only_after_email_verification(self):
+        owner = self.active_user(email='release-registration-owner@example.com')
+        will = Will.objects.create(owner=owner, title='Private Estate Title', content={'body': 'private full will'})
+        relationship = WillBeneficiary.objects.create(
+            will=will,
+            normalized_email='new-release-beneficiary@example.com',
+            full_name='New Beneficiary',
+        )
+        case = VerificationCase.objects.create(
+            will=will,
+            initiator=owner,
+            case_type=VerificationCase.CaseType.POST_DEATH_VERIFY,
+            submission_type=VerificationCase.SubmissionType.BENEFICIARY_CLAIM,
+            status=VerificationCase.Status.APPROVED,
+        )
+        allocation = BeneficiaryAllocation.objects.create(
+            beneficiary=relationship,
+            allocation_type=BeneficiaryAllocation.AllocationType.SPECIFIC_ITEM,
+            description='Private allocated item',
+            review_status=BeneficiaryAllocation.ReviewStatus.VERIFIED,
+            reviewed_case=case,
+        )
+        raw_token = BeneficiaryRelease.generate_access_token()
+        release = BeneficiaryRelease.objects.create(
+            case=case,
+            allocation=allocation,
+            authorized_by=owner,
+            access_token_hash=BeneficiaryRelease.hash_access_token(raw_token),
+            token_expires_at=timezone.now() + timedelta(days=30),
+        )
+
+        validate_response = self.client.post(
+            reverse('beneficiaries:beneficiary-release-validate-token'),
+            {'token': raw_token},
+            format='json',
+        )
+        self.assertEqual(validate_response.status_code, status.HTTP_200_OK)
+        self.assertNotIn('Private Estate Title', str(validate_response.data))
+        self.assertNotIn('Private allocated item', str(validate_response.data))
+        self.assertNotIn('content', str(validate_response.data))
+
+        register_response = self.client.post(
+            reverse('beneficiaries:beneficiary-release-register'),
+            {
+                'token': raw_token,
+                'email': relationship.normalized_email,
+                'first_name': 'New',
+                'last_name': 'Beneficiary',
+                'password': 'Strong-password-123!',
+                'password_confirmation': 'Strong-password-123!',
+            },
+            format='json',
+        )
+        self.assertEqual(register_response.status_code, status.HTTP_201_CREATED)
+        self.assertNotIn('access', register_response.data.get('data', {}))
+        user = User.objects.get(email=relationship.normalized_email)
+        self.assertEqual(user.account_status, User.AccountStatus.PENDING_VERIFICATION)
+        self.assertFalse(user.email_verified)
+
+        self.client.force_authenticate(user)
+        before_verification = self.client.post(
+            reverse('beneficiaries:beneficiary-release-claim'),
+            {'token': raw_token},
+            format='json',
+        )
+        self.assertEqual(before_verification.status_code, status.HTTP_403_FORBIDDEN)
+
+        user.account_status = User.AccountStatus.ACTIVE
+        user.email_verified = True
+        user.save(update_fields=['account_status', 'email_verified', 'updated_at'])
+        self.client.force_authenticate(user)
+        claim_response = self.client.post(
+            reverse('beneficiaries:beneficiary-release-claim'),
+            {'token': raw_token},
+            format='json',
+        )
+        replay_response = self.client.post(
+            reverse('beneficiaries:beneficiary-release-claim'),
+            {'token': raw_token},
+            format='json',
+        )
+
+        self.assertEqual(claim_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(replay_response.status_code, status.HTTP_400_BAD_REQUEST)
+        relationship.refresh_from_db()
+        release.refresh_from_db()
+        self.assertEqual(relationship.beneficiary_user, user)
+        self.assertEqual(relationship.status, WillBeneficiary.Status.ACTIVE)
+        self.assertIsNone(release.access_token_hash)
 
     def test_invited_registration_rejects_nonmatching_email(self):
         owner = self.active_user(email='owner-register-mismatch@example.com')
@@ -507,7 +666,7 @@ class BeneficiaryModuleTests(APITestCase):
             **self.auth_headers(recipient),
         )
 
-        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(first_response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(second_response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_finalized_will_rejects_invitation_acceptance(self):
@@ -549,7 +708,7 @@ class BeneficiaryModuleTests(APITestCase):
         self.assertTrue(AuditEvent.objects.filter(details__event='beneficiary_revoked').exists())
 
     @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
-    def test_owner_can_resend_invitation_rotating_token_and_preserving_history(self):
+    def test_owner_cannot_send_beneficiary_invitation_before_release(self):
         owner = self.active_user(email='owner-resend@example.com')
         will = Will.objects.create(owner=owner, title='Will', content={'body': 'test'})
         relationship = WillBeneficiary.objects.create(
@@ -569,22 +728,11 @@ class BeneficiaryModuleTests(APITestCase):
             **self.auth_headers(owner),
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         previous_invitation.refresh_from_db()
-        self.assertEqual(previous_invitation.status, BeneficiaryInvitation.Status.REVOKED)
-        self.assertEqual(BeneficiaryInvitation.objects.filter(relationship=relationship).count(), 2)
-        current_invitation = BeneficiaryInvitation.objects.filter(relationship=relationship).exclude(pk=previous_invitation.pk).get()
-        self.assertEqual(current_invitation.status, BeneficiaryInvitation.Status.PENDING)
-        self.assertEqual(current_invitation.inviter, owner)
-        self.assertNotEqual(current_invitation.token_hash, previous_invitation.token_hash)
-        self.assertGreater(current_invitation.expires_at, timezone.now())
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertEqual(mail.outbox[0].to, [relationship.normalized_email])
-        self.assertIn('/beneficiary-invitation?token=', mail.outbox[0].body)
-        sent_token = parse_qs(urlsplit(mail.outbox[0].body.split('Invitation link: ', 1)[1].splitlines()[0]).query)['token'][0]
-        self.assertEqual(current_invitation.token_hash, BeneficiaryInvitation.hash_token(sent_token))
-        self.assertNotIn(sent_token, str(response.data))
-        self.assertTrue(AuditEvent.objects.filter(details__event='beneficiary_invitation_resent').exists())
+        self.assertEqual(previous_invitation.status, BeneficiaryInvitation.Status.PENDING)
+        self.assertEqual(BeneficiaryInvitation.objects.filter(relationship=relationship).count(), 1)
+        self.assertEqual(len(mail.outbox), 0)
 
     def test_non_owner_cannot_resend_beneficiary_invitation(self):
         owner = self.active_user(email='owner-resend-auth@example.com')
@@ -679,7 +827,7 @@ class BeneficiaryModuleTests(APITestCase):
         self.assertEqual(len(relationships_response.data['data']), 1)
         self.assertEqual(will_response.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_matching_user_can_decline_invitation(self):
+    def test_matching_user_cannot_decline_legacy_invitation_before_release(self):
         owner = self.active_user(email='owner11@example.com')
         recipient = self.active_user(email='decline@example.com', role=User.Role.BENEFICIARY)
         will = Will.objects.create(owner=owner, title='Will', content={'body': 'test'})
@@ -694,13 +842,12 @@ class BeneficiaryModuleTests(APITestCase):
             **self.auth_headers(recipient),
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         relationship.refresh_from_db()
         invitation.refresh_from_db()
-        self.assertEqual(relationship.status, WillBeneficiary.Status.DECLINED)
-        self.assertEqual(invitation.status, BeneficiaryInvitation.Status.DECLINED)
-        self.assertIsNone(invitation.token_hash)
-        self.assertTrue(AuditEvent.objects.filter(details__event='beneficiary_invitation_declined').exists())
+        self.assertEqual(relationship.status, WillBeneficiary.Status.PENDING)
+        self.assertEqual(invitation.status, BeneficiaryInvitation.Status.PENDING)
+        self.assertIsNotNone(invitation.token_hash)
 
     def test_decline_rejects_different_account(self):
         owner = self.active_user(email='owner11@example.com')
@@ -718,7 +865,7 @@ class BeneficiaryModuleTests(APITestCase):
             **self.auth_headers(other),
         )
 
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         relationship.refresh_from_db()
         self.assertEqual(relationship.status, WillBeneficiary.Status.PENDING)
 
@@ -743,7 +890,7 @@ class BeneficiaryModuleTests(APITestCase):
             **self.auth_headers(recipient),
         )
 
-        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(first_response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(second_response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_declined_relationship_cannot_be_edited_or_revoked(self):

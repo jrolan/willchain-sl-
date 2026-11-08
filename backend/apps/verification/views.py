@@ -7,6 +7,9 @@ Follows the standard JSON response envelope:
 """
 
 from django.http import FileResponse
+from django.db import transaction
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.generics import GenericAPIView
@@ -16,13 +19,20 @@ from rest_framework.response import Response
 
 from apps.accounts.models import User
 from apps.accounts.permissions import IsActiveAccount, IsAdministrator
+from apps.accounts.services import log_audit_event
+from apps.audit.models import AuditEvent
+from apps.beneficiaries.models import BeneficiaryAllocation
 from apps.documents.storage import private_document_storage
 
-from .models import CaseEvidence, VerificationCase
-from .permissions import CanViewCase, IsAssignedLawyer, IsCaseInitiator
+from .models import BeneficiaryNotificationOutbox, BeneficiaryRelease, CaseEvidence, VerificationCase
+from .permissions import CanRetryReleaseNotification, CanViewCase, IsAssignedLawyer, IsAssignedLawyerForRelease, IsAssignedLawyerOrAdministrator, IsCaseInitiator, lawyer_case_scope_is_authorized
 from .serializers import (
     CaseEvidenceSerializer,
     DecisionSerializer,
+    BeneficiaryAllocationReviewSerializer,
+    BeneficiaryReleaseAuthorizationSerializer,
+    BeneficiaryReleaseStatusSerializer,
+    LawyerBeneficiaryAllocationSerializer,
     EligibilityAssessmentInputSerializer,
     EligibilityAssessmentSerializer,
     EvidenceUploadSerializer,
@@ -35,12 +45,16 @@ from .serializers import (
 from .services import (
     assess_eligibility,
     assign_lawyer,
+    dispatch_beneficiary_notification,
+    get_case_beneficiary_allocations,
     authorize_will_disclosure,
     begin_review,
+    authorize_beneficiary_releases,
     create_case,
     record_decision,
     request_information,
     revoke_will_disclosure,
+    review_beneficiary_allocation,
     set_evidence_sufficiency,
     submit_additional_information,
     submit_case,
@@ -65,6 +79,13 @@ class VerificationCaseListCreateAPIView(GenericAPIView):
     def get(self, request, *args, **kwargs):
         cases = self.get_queryset()
         serializer = self.get_serializer(cases, many=True)
+        if request.user.role == User.Role.LAWYER_VERIFIER:
+            log_audit_event(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                actor=request.user,
+                details={'event': 'lawyer_assigned_case_list_accessed', 'case_count': len(serializer.data)},
+            )
         return Response({'data': serializer.data})
 
     def post(self, request, *args, **kwargs):
@@ -89,6 +110,137 @@ class VerificationCaseListCreateAPIView(GenericAPIView):
         )
 
 
+class CaseBeneficiaryAllocationReviewAPIView(GenericAPIView):
+    permission_classes = [IsAuthenticated, IsActiveAccount, IsAssignedLawyer]
+    queryset = VerificationCase.objects.all()
+
+    @transaction.atomic
+    def post(self, request, pk, allocation_pk, *args, **kwargs):
+        case = self.get_object()
+        input_serializer = BeneficiaryAllocationReviewSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        allocation = get_object_or_404(
+            BeneficiaryAllocation.objects.select_for_update().select_related('beneficiary'),
+            pk=allocation_pk,
+            beneficiary__will_id=case.will_id,
+        )
+        allocation = review_beneficiary_allocation(
+            case,
+            allocation,
+            request.user,
+            input_serializer.validated_data['review_status'],
+            request=request,
+        )
+        return Response({
+            'data': {
+                'allocation_id': allocation.pk,
+                'review_status': allocation.review_status,
+                'reviewed_at': allocation.reviewed_at,
+            },
+            'message': 'Allocation review recorded.',
+        })
+
+
+class CaseBeneficiaryAllocationListAPIView(GenericAPIView):
+    permission_classes = [IsAuthenticated, IsActiveAccount, IsAssignedLawyerOrAdministrator]
+    queryset = VerificationCase.objects.all()
+
+    def get(self, request, pk, *args, **kwargs):
+        case = self.get_object()
+        allocations = get_case_beneficiary_allocations(case, request.user)
+        return Response({'data': LawyerBeneficiaryAllocationSerializer(allocations, many=True).data})
+
+
+class CaseAuthorizeBeneficiaryReleaseAPIView(GenericAPIView):
+    permission_classes = [IsAuthenticated, IsActiveAccount, IsAssignedLawyerForRelease]
+    queryset = VerificationCase.objects.all()
+
+    @transaction.atomic
+    def post(self, request, pk, *args, **kwargs):
+        case = get_object_or_404(VerificationCase.objects.select_for_update(), pk=pk)
+        self.check_object_permissions(request, case)
+        input_serializer = BeneficiaryReleaseAuthorizationSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        releases = authorize_beneficiary_releases(
+            case,
+            input_serializer.validated_data['allocation_ids'],
+            request.user,
+            request=request,
+        )
+        return Response({
+            'data': {
+                'releases': [
+                    {'release_id': release.pk, 'allocation_id': release.allocation_id, 'status': release.status}
+                    for release in releases
+                ],
+            },
+            'message': 'Authorized allocation releases have been queued for notification.',
+        })
+
+
+class CaseBeneficiaryReleaseStatusAPIView(GenericAPIView):
+    permission_classes = [IsAuthenticated, IsActiveAccount, CanViewCase]
+    queryset = VerificationCase.objects.all()
+
+    def get(self, request, pk, *args, **kwargs):
+        case = self.get_object()
+        releases = BeneficiaryRelease.objects.filter(case=case)
+        if request.user != case.assigned_lawyer and request.user.role != User.Role.ADMINISTRATOR:
+            releases = releases.filter(
+                allocation__beneficiary__beneficiary_user=request.user,
+                allocation__beneficiary__normalized_email__iexact=request.user.email,
+            )
+        releases = releases.select_related('allocation').prefetch_related('notification')
+        data = []
+        for release in releases:
+            notification = getattr(release, 'notification', None)
+            data.append({
+                'release_id': release.pk,
+                'allocation_id': release.allocation_id,
+                'allocation_type': release.allocation.allocation_type,
+                'status': release.status,
+                'notification_status': notification.status if notification else None,
+                'authorized_at': release.authorized_at,
+            })
+        return Response({'data': BeneficiaryReleaseStatusSerializer(data, many=True).data})
+
+
+class BeneficiaryReleaseNotificationRetryAPIView(GenericAPIView):
+    permission_classes = [IsAuthenticated, IsActiveAccount, CanRetryReleaseNotification]
+    queryset = BeneficiaryRelease.objects.all()
+
+    @transaction.atomic
+    def post(self, request, pk, *args, **kwargs):
+        release = get_object_or_404(BeneficiaryRelease.objects.select_for_update(), pk=pk)
+        self.check_object_permissions(request, release)
+        if release.status != BeneficiaryRelease.Status.AUTHORIZED:
+            raise ValidationError('Only an active authorized release can be notified.')
+        outbox, _ = BeneficiaryNotificationOutbox.objects.get_or_create(
+            release=release,
+            defaults={
+                'recipient_email': release.allocation.beneficiary.normalized_email,
+                'available_at': timezone.now(),
+            },
+        )
+        outbox.status = BeneficiaryNotificationOutbox.Status.PENDING
+        outbox.available_at = timezone.now()
+        outbox.delivered_at = None
+        outbox.last_error = ''
+        outbox.save(update_fields=['status', 'available_at', 'delivered_at', 'last_error', 'updated_at'])
+        release.access_token_hash = None
+        release.token_expires_at = None
+        release.save(update_fields=['access_token_hash', 'token_expires_at', 'updated_at'])
+        log_audit_event(
+            AuditEvent.EventType.SECURITY_ALERT,
+            request=request,
+            actor=request.user,
+            target_user=release.allocation.beneficiary.beneficiary_user,
+            details={'event': 'beneficiary_notification_retry_requested', 'release_id': release.pk, 'outbox_id': outbox.pk},
+        )
+        transaction.on_commit(lambda: dispatch_beneficiary_notification(outbox.pk))
+        return Response({'data': {'release_id': release.pk, 'notification_status': outbox.status}})
+
+
 class VerificationCaseDetailAPIView(GenericAPIView):
     permission_classes = [IsAuthenticated, IsActiveAccount, CanViewCase]
     serializer_class = VerificationCaseSerializer
@@ -97,6 +249,14 @@ class VerificationCaseDetailAPIView(GenericAPIView):
     def get(self, request, pk, *args, **kwargs):
         case = self.get_object()
         serializer = self.get_serializer(case)
+        if request.user == case.assigned_lawyer:
+            log_audit_event(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                actor=request.user,
+                target_user=case.initiator,
+                details={'event': 'lawyer_case_accessed', 'case_id': case.pk, 'case_type': case.case_type, 'status': case.status},
+            )
         return Response({'data': serializer.data})
 
 
@@ -171,6 +331,14 @@ class CaseEvidenceListCreateAPIView(GenericAPIView):
         except VerificationCase.DoesNotExist:
             raise NotFound('Verification case not found.')
         self.check_object_permissions(self.request, case)
+        if self.request.user == case.assigned_lawyer and not lawyer_case_scope_is_authorized(case, self.request.user):
+            log_audit_event(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=self.request,
+                actor=self.request.user,
+                details={'event': 'case_evidence_access_denied', 'case_id': case.pk, 'operation': self.request.method},
+            )
+            raise PermissionDenied('This case is not currently authorized for lawyer evidence access.')
         return case
 
     def get_permissions(self):
@@ -182,6 +350,14 @@ class CaseEvidenceListCreateAPIView(GenericAPIView):
         case = self.get_case()
         evidence_list = case.evidence.all()
         serializer = CaseEvidenceSerializer(evidence_list, many=True)
+        if request.user == case.assigned_lawyer:
+            log_audit_event(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                actor=request.user,
+                target_user=case.initiator,
+                details={'event': 'lawyer_case_evidence_metadata_accessed', 'case_id': case.pk, 'evidence_count': len(serializer.data)},
+            )
         return Response({'data': serializer.data})
 
     def post(self, request, pk, *args, **kwargs):
@@ -217,12 +393,22 @@ class CaseEvidenceDownloadAPIView(GenericAPIView):
 
         u = request.user
         if not (u == case.initiator or u == case.assigned_lawyer or u.role == User.Role.ADMINISTRATOR):
+            log_audit_event(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                actor=u,
+                details={'event': 'case_evidence_download_denied', 'case_id': case.pk, 'evidence_id': evidence_pk},
+            )
             raise PermissionDenied('You do not have permission to download this evidence.')
 
-        if u == case.assigned_lawyer and case.case_type == VerificationCase.CaseType.PRE_DEATH_REVIEW:
-            auth = getattr(case, 'disclosure_authorization', None)
-            if not auth or not auth.is_active:
-                raise PermissionDenied('Active disclosure authorization is required to access evidence on pre-death review cases.')
+        if u == case.assigned_lawyer and not lawyer_case_scope_is_authorized(case, u):
+            log_audit_event(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                actor=u,
+                details={'event': 'case_evidence_download_denied', 'case_id': case.pk, 'evidence_id': evidence_pk},
+            )
+            raise PermissionDenied('This case is not currently authorized for lawyer evidence access.')
 
         try:
             evidence = CaseEvidence.objects.get(pk=evidence_pk, case=case)
@@ -230,6 +416,13 @@ class CaseEvidenceDownloadAPIView(GenericAPIView):
             raise NotFound('Evidence file not found.')
 
         source = private_document_storage.open(evidence.storage_key)
+        log_audit_event(
+            AuditEvent.EventType.SECURITY_ALERT,
+            request=request,
+            actor=u,
+            target_user=case.initiator,
+            details={'event': 'case_evidence_downloaded', 'case_id': case.pk, 'evidence_id': evidence.pk},
+        )
         response = FileResponse(source, content_type=evidence.media_type)
         response['Content-Disposition'] = f'attachment; filename="{evidence.original_filename}"'
         response['Cache-Control'] = 'private, no-store'
@@ -386,14 +579,33 @@ class WillDisclosureDownloadAPIView(GenericAPIView):
         except VerificationCase.DoesNotExist:
             raise NotFound('Case not found.')
 
-        if case.assigned_lawyer != request.user:
-            raise PermissionDenied('Only the assigned lawyer can download the disclosed will copy.')
+        if case.assigned_lawyer != request.user or not lawyer_case_scope_is_authorized(case, request.user):
+            log_audit_event(
+                AuditEvent.EventType.WILL_ACCESS_DENIED,
+                request=request,
+                actor=request.user,
+                details={'will_id': case.will_id, 'case_id': case.pk, 'operation': 'DISCLOSURE_DOWNLOAD'},
+            )
+            raise PermissionDenied('This case is not currently authorized for lawyer document access.')
 
         auth = getattr(case, 'disclosure_authorization', None)
         if not auth or not auth.is_active:
+            log_audit_event(
+                AuditEvent.EventType.WILL_ACCESS_DENIED,
+                request=request,
+                actor=request.user,
+                details={'will_id': case.will_id, 'case_id': case.pk, 'operation': 'DISCLOSURE_DOWNLOAD'},
+            )
             raise PermissionDenied('No active disclosure authorization exists for this case.')
 
         source = private_document_storage.open(auth.storage_key)
+        log_audit_event(
+            AuditEvent.EventType.WILL_ACCESSED,
+            request=request,
+            actor=request.user,
+            target_user=case.will.owner if case.will_id else None,
+            details={'will_id': case.will_id, 'case_id': case.pk, 'access_scope': 'LAWYER_DISCLOSED_COPY_DOWNLOAD'},
+        )
         response = FileResponse(source, content_type=auth.media_type)
         response['Content-Disposition'] = f'attachment; filename="{auth.original_filename}"'
         response['Cache-Control'] = 'private, no-store'

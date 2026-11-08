@@ -2,18 +2,21 @@
 
 Secure digital will-management academic project for Sierra Leone.
 
-The repository contains a Next.js frontend and a Django REST Framework backend. Module 1 authentication and the Module 2 will-management foundation are implemented incrementally under the approved architecture.
+The repository contains a Next.js frontend and a Django REST Framework backend. Authentication, will management, verification, lawyer review, audit, and beneficiary release workflows are implemented incrementally under the approved architecture.
 
-Module 2 currently covers private owner drafts, lifecycle state, versioning, finalization, object-level authorization, audit events, and the authenticated owner dashboard workflow. Blockchain integrity and AI services are reserved for later modules.
+Will management covers private owner drafts, lifecycle state, versioning, finalization, object-level authorization, audit events, and the authenticated owner dashboard. Beneficiary allocations are stored separately from will content, and notification is gated behind case approval, per-allocation lawyer review, and explicit release authorization. Blockchain integrity and AI services are reserved for later modules.
 
 ## Local Docker setup
 
-Copy the backend environment template to `backend/.env` and set the local PostgreSQL password and Django secret before starting the stack:
+Copy the backend environment template to `backend/.env` and set the local PostgreSQL password and Django secret. For a Docker Google sign-in demo, also set `NEXT_PUBLIC_GOOGLE_OAUTH2_CLIENT_ID` in the PowerShell session before building the frontend image:
 
 ```cmd
 copy backend\.env.example backend\.env
+set NEXT_PUBLIC_GOOGLE_OAUTH2_CLIENT_ID=your-google-oauth-web-client-id
 docker compose up --build
 ```
+
+The Google client ID is public and must match `GOOGLE_OAUTH2_CLIENT_ID` in `backend/.env`. See [backend/README.md](backend/README.md) for Google Cloud origins and SMTP release-email setup. In PowerShell, use `$env:NEXT_PUBLIC_GOOGLE_OAUTH2_CLIENT_ID = 'your-google-oauth-web-client-id'` instead of `set`.
 
 The services are available at:
 

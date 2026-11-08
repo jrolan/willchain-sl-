@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import Exists, OuterRef, Q
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
@@ -9,8 +10,10 @@ from rest_framework.response import Response
 from apps.accounts.permissions import CanManageOwnWills, IsActiveAccount, IsOwner
 from apps.audit.models import AuditEvent
 from apps.accounts.services import log_audit_event
+from apps.verification.models import VerificationCase
+from apps.verification.permissions import IsAssignedLawyerOnAuthorizedCase
 from .models import Will
-from .serializers import WillSerializer
+from .serializers import LawyerWillReadOnlySerializer, WillSerializer
 
 
 class WillListCreateAPIView(generics.ListCreateAPIView):
@@ -122,6 +125,48 @@ class WillDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
             details={'will_id': instance.pk, 'version': instance.version},
         )
         return response
+
+
+class LawyerWillViewAPIView(generics.RetrieveAPIView):
+    serializer_class = LawyerWillReadOnlySerializer
+    permission_classes = (IsAuthenticated, IsActiveAccount, IsAssignedLawyerOnAuthorizedCase)
+
+    def get_queryset(self):
+        eligible_case = VerificationCase.objects.filter(
+            will_id=OuterRef('pk'),
+            assigned_lawyer=self.request.user,
+            status__in=[
+                VerificationCase.Status.OPEN,
+                VerificationCase.Status.INFORMATION_REQUIRED,
+                VerificationCase.Status.UNDER_REVIEW,
+                VerificationCase.Status.APPROVED,
+            ],
+        ).filter(
+            Q(case_type=VerificationCase.CaseType.POST_DEATH_VERIFY)
+            | Q(
+                case_type=VerificationCase.CaseType.PRE_DEATH_REVIEW,
+                disclosure_authorization__is_active=True,
+            )
+        )
+        return Will.objects.filter(pk=self.kwargs['pk']).filter(Exists(eligible_case)).select_related('owner')
+
+    def get_object(self):
+        obj = self.get_queryset().first()
+        if not obj:
+            raise Http404('No authorized will view is available for this lawyer.')
+        self.check_object_permissions(self.request, obj)
+        return obj
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        log_audit_event(
+            AuditEvent.EventType.WILL_ACCESSED,
+            request=request,
+            actor=request.user,
+            details={'will_id': instance.pk, 'status': instance.status, 'access_scope': 'LAWYER_READ_ONLY'},
+        )
+        serializer = self.get_serializer(instance)
+        return Response({'data': serializer.data})
 
 
 class FinalizeWillAPIView(generics.GenericAPIView):

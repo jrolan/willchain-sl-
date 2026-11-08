@@ -8,13 +8,14 @@ from apps.documents.views import (
     WillDocumentReplaceAPIView,
     WillDocumentVersionsAPIView,
 )
-from .views import FinalizeWillAPIView, WillDetailAPIView, WillListCreateAPIView
+from .views import FinalizeWillAPIView, LawyerWillViewAPIView, WillDetailAPIView, WillListCreateAPIView
 
 app_name = 'wills'
 
 urlpatterns = [
     path('', WillListCreateAPIView.as_view(), name='will-list'),
     path('<int:pk>/', WillDetailAPIView.as_view(), name='will-detail'),
+    path('<int:pk>/lawyer-view/', LawyerWillViewAPIView.as_view(), name='will-lawyer-view'),
     path('<int:pk>/finalize/', FinalizeWillAPIView.as_view(), name='will-finalize'),
     path('<int:will_id>/documents/', WillDocumentListCreateAPIView.as_view(), name='will-documents'),
     path('<int:will_id>/documents/<int:pk>/', WillDocumentDetailAPIView.as_view(), name='will-document-detail'),

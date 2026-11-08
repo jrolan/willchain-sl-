@@ -41,6 +41,7 @@ const roleNavigation: Record<UserRole, NavigationGroup[]> = {
   OWNER: [
     { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
+    { label: "My Allocations", href: "/dashboard/beneficiary-allocations", icon: FileText },
     { label: "My Will", href: "/dashboard/wills", icon: FileText, children: [
       { label: "Will Overview", href: "/dashboard/wills", icon: FileText },
       { label: "Beneficiaries", href: "/dashboard/wills#beneficiaries", icon: Users },
@@ -61,6 +62,7 @@ const roleNavigation: Record<UserRole, NavigationGroup[]> = {
   MEMBER: [
     { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
+    { label: "My Allocations", href: "/dashboard/beneficiary-allocations", icon: FileText },
     { label: "My Will", href: "/dashboard/wills", icon: FileText, children: [
       { label: "Will Overview", href: "/dashboard/wills", icon: FileText },
       { label: "Beneficiaries", href: "/dashboard/wills#beneficiaries", icon: Users },
@@ -78,6 +80,7 @@ const roleNavigation: Record<UserRole, NavigationGroup[]> = {
   BENEFICIARY: [
     { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
+    { label: "My Allocations", href: "/dashboard/beneficiary-allocations", icon: FileText },
     { label: "My Relationships", href: "/dashboard#role-workspace", icon: Users },
     { label: "Verification Workflow", href: "/dashboard/verification", icon: Gavel },
     { label: "Account Verification", href: "/dashboard#verification", icon: ShieldCheck },
@@ -90,6 +93,7 @@ const roleNavigation: Record<UserRole, NavigationGroup[]> = {
   WITNESS: [
     { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
+    { label: "My Allocations", href: "/dashboard/beneficiary-allocations", icon: FileText },
     { label: "Attestation Status", href: "/dashboard#role-workspace", icon: UserCheck },
     { label: "Account Verification", href: "/dashboard#verification", icon: ShieldCheck },
     { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
@@ -101,6 +105,7 @@ const roleNavigation: Record<UserRole, NavigationGroup[]> = {
   LAWYER_VERIFIER: [
     { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
+    { label: "My Allocations", href: "/dashboard/beneficiary-allocations", icon: FileText },
     { label: "Verification Workflow", href: "/dashboard/verification", icon: Gavel },
     { label: "Verification Readiness", href: "/dashboard#role-workspace", icon: Gavel },
     { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
@@ -112,6 +117,7 @@ const roleNavigation: Record<UserRole, NavigationGroup[]> = {
   ADMINISTRATOR: [
     { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
+    { label: "My Allocations", href: "/dashboard/beneficiary-allocations", icon: FileText },
     { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
     { label: "Security", href: "/dashboard#security", icon: ShieldCheck, children: [
       { label: "Account Settings", href: "/profile", icon: UserRound },

@@ -83,6 +83,18 @@ export interface VerificationCase {
   updated_at: string;
 }
 
+export interface CaseBeneficiaryAllocation {
+  id: number;
+  beneficiary_name: string;
+  allocation_type: "FIXED_AMOUNT" | "PERCENTAGE" | "SPECIFIC_ITEM";
+  description: string;
+  amount: string | null;
+  currency_code: string;
+  percentage: string | null;
+  review_status: "PENDING" | "VERIFIED" | "WITHHELD";
+  reviewed_at: string | null;
+}
+
 export interface CreateCasePayload {
   will?: number | null;
   case_type: CaseType;

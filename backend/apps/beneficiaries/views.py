@@ -1,7 +1,7 @@
-from datetime import timedelta
-
 from django.db import IntegrityError, transaction
+from django.db.models import F
 from django.shortcuts import get_object_or_404
+from django.http import Http404
 from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
@@ -14,17 +14,56 @@ from apps.accounts.permissions import CanManageOwnWills, IsActiveAccount, IsOwne
 from apps.accounts.serializers import RegistrationSerializer, UserSerializer
 from apps.accounts.services import send_email_verification
 from apps.audit.models import AuditEvent
+from apps.verification.models import BeneficiaryRelease, VerificationCase
 from apps.wills.models import Will
-from .models import BeneficiaryInvitation, WillBeneficiary
-from .services import record_beneficiary_audit, send_beneficiary_invitation_email
+from .models import BeneficiaryAllocation, BeneficiaryInvitation, WillBeneficiary
+from .services import record_beneficiary_audit
 from .serializers import (
     AcceptInvitationSerializer,
+    BeneficiaryAllocationAccessSerializer,
+    BeneficiaryAllocationSerializer,
     BeneficiaryInvitationSerializer,
     BeneficiaryInvitationPreviewSerializer,
+    BeneficiaryReleaseRegistrationSerializer,
+    BeneficiaryReleaseTokenSerializer,
     CreateWillBeneficiarySerializer,
     BeneficiarySelfRelationshipSerializer,
     WillBeneficiarySerializer,
 )
+
+
+def get_valid_beneficiary_release(raw_token, lock=False):
+    if not isinstance(raw_token, str) or not raw_token:
+        return None
+    queryset = BeneficiaryRelease.objects
+    if lock:
+        queryset = queryset.select_for_update()
+    return queryset.select_related('allocation__beneficiary', 'case').filter(
+        access_token_hash=BeneficiaryRelease.hash_access_token(raw_token),
+        status__in=[BeneficiaryRelease.Status.AUTHORIZED, BeneficiaryRelease.Status.ACKNOWLEDGED],
+        token_expires_at__gt=timezone.now(),
+        case__case_type=VerificationCase.CaseType.POST_DEATH_VERIFY,
+        case__status=VerificationCase.Status.APPROVED,
+        allocation__review_status=BeneficiaryAllocation.ReviewStatus.VERIFIED,
+        allocation__reviewed_case=F('case'),
+    ).first()
+
+
+def mask_email(email):
+    local, separator, domain = email.partition('@')
+    return f'{local[:1]}***@{domain}' if separator else '***'
+
+
+def relationship_has_authorized_release(relationship):
+    return relationship.allocations.filter(
+        review_status=BeneficiaryAllocation.ReviewStatus.VERIFIED,
+        release_authorization__status__in=[
+            BeneficiaryRelease.Status.AUTHORIZED,
+            BeneficiaryRelease.Status.ACKNOWLEDGED,
+        ],
+        release_authorization__case__case_type=VerificationCase.CaseType.POST_DEATH_VERIFY,
+        release_authorization__case__status=VerificationCase.Status.APPROVED,
+    ).exists()
 
 
 class WillBeneficiaryListCreateAPIView(generics.ListCreateAPIView):
@@ -62,15 +101,7 @@ class WillBeneficiaryListCreateAPIView(generics.ListCreateAPIView):
             actor=request.user,
             details={'event': 'beneficiary_created', 'will_id': will.pk, 'beneficiary_id': relationship.pk},
         )
-        invitation = relationship.invitations.order_by('-created_at').first()
-        record_beneficiary_audit(
-            AuditEvent.EventType.SECURITY_ALERT,
-            request=request,
-            actor=request.user,
-            details={'event': 'beneficiary_invitation_created', 'relationship_id': relationship.pk, 'invitation_id': invitation.pk, 'will_id': will.pk},
-        )
-        send_beneficiary_invitation_email(invitation, serializer.context['raw_invitation_token'])
-        response = Response({'data': WillBeneficiarySerializer(relationship).data, 'message': 'Beneficiary invitation created successfully.'}, status=status.HTTP_201_CREATED)
+        response = Response({'data': WillBeneficiarySerializer(relationship).data, 'message': 'Beneficiary added. No notification is sent before authorized release.'}, status=status.HTTP_201_CREATED)
         return response
 
     def list(self, request, *args, **kwargs):
@@ -156,6 +187,121 @@ class WillBeneficiaryDetailAPIView(RetrieveUpdateDestroyAPIView):
         return Response({'data': {'id': obj.pk, 'status': obj.status}, 'message': 'Beneficiary revoked successfully.'})
 
 
+class WillBeneficiaryAllocationListCreateAPIView(generics.ListCreateAPIView):
+    serializer_class = BeneficiaryAllocationSerializer
+    permission_classes = (IsAuthenticated, IsActiveAccount, CanManageOwnWills)
+
+    def get_queryset(self):
+        return BeneficiaryAllocation.objects.filter(
+            beneficiary__will__owner=self.request.user,
+            beneficiary__will_id=self.kwargs['will_id'],
+            beneficiary_id=self.kwargs['beneficiary_id'],
+        ).select_related('beneficiary', 'beneficiary__will')
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        will = get_object_or_404(
+            Will.objects.select_for_update(),
+            pk=self.kwargs['will_id'],
+            owner=request.user,
+        )
+        if will.status != Will.Status.DRAFT:
+            return Response(
+                {'error': {'code': 'WILL_NOT_DRAFT', 'message': 'Allocations can only be changed while the will is a draft.'}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        beneficiary = get_object_or_404(
+            WillBeneficiary.objects.select_for_update(),
+            pk=self.kwargs['beneficiary_id'],
+            will=will,
+            relationship_type__in=[
+                WillBeneficiary.RelationshipType.PRIMARY,
+                WillBeneficiary.RelationshipType.CONTINGENT,
+                WillBeneficiary.RelationshipType.RESIDUAL,
+            ],
+            status__in=[WillBeneficiary.Status.PENDING, WillBeneficiary.Status.ACTIVE],
+        )
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        allocation = serializer.save(beneficiary=beneficiary)
+        record_beneficiary_audit(
+            AuditEvent.EventType.SECURITY_ALERT,
+            request=request,
+            actor=request.user,
+            details={'event': 'beneficiary_allocation_created', 'will_id': will.pk, 'relationship_id': beneficiary.pk, 'allocation_id': allocation.pk},
+        )
+        return Response({'data': serializer.data}, status=status.HTTP_201_CREATED)
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        response.data = {'data': response.data}
+        return response
+
+
+class WillBeneficiaryAllocationDetailAPIView(RetrieveUpdateDestroyAPIView):
+    serializer_class = BeneficiaryAllocationSerializer
+    permission_classes = (IsAuthenticated, IsActiveAccount, CanManageOwnWills)
+
+    def get_queryset(self):
+        return BeneficiaryAllocation.objects.filter(
+            beneficiary__will__owner=self.request.user,
+            beneficiary__will_id=self.kwargs['will_id'],
+            beneficiary_id=self.kwargs['beneficiary_id'],
+        ).select_related('beneficiary', 'beneficiary__will')
+
+    def get_object(self):
+        allocation = get_object_or_404(self.get_queryset(), pk=self.kwargs['pk'])
+        self.check_object_permissions(self.request, allocation)
+        return allocation
+
+    def ensure_draft(self, allocation):
+        if allocation.beneficiary.will.status != Will.Status.DRAFT:
+            return Response(
+                {'error': {'code': 'WILL_NOT_DRAFT', 'message': 'Allocations can only be changed while the will is a draft.'}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return None
+
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):
+        allocation = self.get_object()
+        draft_error = self.ensure_draft(allocation)
+        if draft_error:
+            return draft_error
+        if any(field in request.data for field in ('review_status', 'reviewed_by', 'reviewed_at', 'beneficiary')):
+            return Response(
+                {'error': {'code': 'ALLOCATION_REVIEW_FIELDS_FORBIDDEN', 'message': 'Allocation review fields are controlled by the verification workflow.'}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        response = super().update(request, *args, **kwargs)
+        record_beneficiary_audit(
+            AuditEvent.EventType.SECURITY_ALERT,
+            request=request,
+            actor=request.user,
+            details={'event': 'beneficiary_allocation_updated', 'will_id': allocation.beneficiary.will_id, 'relationship_id': allocation.beneficiary_id, 'allocation_id': allocation.pk},
+        )
+        response.data = {'data': response.data}
+        return response
+
+    @transaction.atomic
+    def delete(self, request, *args, **kwargs):
+        allocation = self.get_object()
+        draft_error = self.ensure_draft(allocation)
+        if draft_error:
+            return draft_error
+        allocation_id = allocation.pk
+        relationship_id = allocation.beneficiary_id
+        will_id = allocation.beneficiary.will_id
+        allocation.delete()
+        record_beneficiary_audit(
+            AuditEvent.EventType.SECURITY_ALERT,
+            request=request,
+            actor=request.user,
+            details={'event': 'beneficiary_allocation_deleted', 'will_id': will_id, 'relationship_id': relationship_id, 'allocation_id': allocation_id},
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class BeneficiaryInvitationResendAPIView(generics.GenericAPIView):
     permission_classes = (IsAuthenticated, IsActiveAccount, CanManageOwnWills, IsOwner)
     throttle_classes = (ScopedRateThrottle,)
@@ -184,45 +330,9 @@ class BeneficiaryInvitationResendAPIView(generics.GenericAPIView):
                 {'error': {'code': 'RELATIONSHIP_NOT_PENDING', 'message': 'Only pending beneficiary relationships can be reinvited.'}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        now = timezone.now()
-        for previous_invitation in relationship.invitations.select_for_update().filter(status=BeneficiaryInvitation.Status.PENDING):
-            previous_invitation.status = (
-                BeneficiaryInvitation.Status.EXPIRED
-                if previous_invitation.expires_at <= now
-                else BeneficiaryInvitation.Status.REVOKED
-            )
-            previous_invitation.token_hash = None
-            if previous_invitation.status == BeneficiaryInvitation.Status.REVOKED:
-                previous_invitation.responded_at = now
-            previous_invitation.save(update_fields=['status', 'token_hash', 'responded_at', 'updated_at'])
-        raw_token = BeneficiaryInvitation.generate_token()
-        invitation = BeneficiaryInvitation.objects.create(
-            relationship=relationship,
-            inviter=request.user,
-            recipient_email=relationship.normalized_email,
-            status=BeneficiaryInvitation.Status.PENDING,
-            expires_at=now + timedelta(days=7),
-            token_hash=BeneficiaryInvitation.hash_token(raw_token),
-        )
-        record_beneficiary_audit(
-            AuditEvent.EventType.SECURITY_ALERT,
-            request=request,
-            actor=request.user,
-            details={
-                'event': 'beneficiary_invitation_resent',
-                'relationship_id': relationship.pk,
-                'invitation_id': invitation.pk,
-                'will_id': relationship.will_id,
-            },
-        )
-        send_beneficiary_invitation_email(invitation, raw_token)
         return Response(
-            {
-                'data': BeneficiaryInvitationSerializer(invitation).data,
-                'message': 'Beneficiary invitation resent successfully.',
-            },
-            status=status.HTTP_200_OK,
+            {'error': {'code': 'RELEASE_NOT_AUTHORIZED', 'message': 'Beneficiary invitations are sent only after an allocation is authorized for release.'}},
+            status=status.HTTP_403_FORBIDDEN,
         )
 
 
@@ -262,6 +372,7 @@ class BeneficiaryInvitationRegistrationAPIView(generics.GenericAPIView):
             or invitation.relationship.status != WillBeneficiary.Status.PENDING
             or invitation.relationship.will.status != Will.Status.DRAFT
             or invitation.recipient_email.lower() != email.strip().lower()
+            or not relationship_has_authorized_release(invitation.relationship)
         ):
             return Response(
                 {'error': {'code': 'INVALID_INVITATION', 'message': 'Invitation or registration details are invalid.'}},
@@ -299,15 +410,19 @@ class BeneficiaryInvitationPreviewAPIView(generics.RetrieveAPIView):
     def get_object(self):
         token = self.kwargs['token']
         token_hash = BeneficiaryInvitation.hash_token(token)
-        return get_object_or_404(
-            BeneficiaryInvitation.objects.select_related('relationship__will'),
+        queryset = BeneficiaryInvitation.objects.select_related('relationship__will').filter(
             token_hash=token_hash,
             recipient_email__iexact=self.request.user.email,
             status=BeneficiaryInvitation.Status.PENDING,
             expires_at__gt=timezone.now(),
             relationship__status=WillBeneficiary.Status.PENDING,
             relationship__will__status=Will.Status.DRAFT,
+            relationship__allocations__review_status=BeneficiaryAllocation.ReviewStatus.VERIFIED,
+            relationship__allocations__release_authorization__status=BeneficiaryRelease.Status.AUTHORIZED,
+            relationship__allocations__release_authorization__case__case_type=VerificationCase.CaseType.POST_DEATH_VERIFY,
+            relationship__allocations__release_authorization__case__status=VerificationCase.Status.APPROVED,
         )
+        return get_object_or_404(queryset.distinct())
 
 
 class BeneficiaryInvitationAcceptAPIView(generics.GenericAPIView):
@@ -336,6 +451,7 @@ class BeneficiaryInvitationAcceptAPIView(generics.GenericAPIView):
             or invitation.recipient_email.lower() != user.email.lower()
             or not user.email_verified
             or user.account_status != User.AccountStatus.ACTIVE
+            or not relationship_has_authorized_release(relationship)
         ):
             return Response(
                 {'error': {'code': 'INVALID_INVITATION', 'message': 'Invitation is invalid, expired, or no longer available.'}},
@@ -382,7 +498,12 @@ class BeneficiaryInvitationDeclineAPIView(generics.GenericAPIView):
         invitation = BeneficiaryInvitation.objects.select_for_update().filter(
             pk=invitation_data['id'], relationship=relationship,
         ).first() if relationship else None
-        if not invitation or not invitation.is_valid() or relationship.status != WillBeneficiary.Status.PENDING:
+        if (
+            not invitation
+            or not invitation.is_valid()
+            or relationship.status != WillBeneficiary.Status.PENDING
+            or not relationship_has_authorized_release(relationship)
+        ):
             return Response({'error': {'code': 'INVALID_TOKEN', 'message': 'Invitation is invalid or expired.'}}, status=status.HTTP_400_BAD_REQUEST)
         if request.user.email.lower() != invitation.recipient_email.lower():
             return Response({'error': {'code': 'ACCOUNT_MISMATCH', 'message': 'This invitation does not belong to this account.'}}, status=status.HTTP_403_FORBIDDEN)
@@ -420,3 +541,204 @@ class BeneficiaryRelationshipSelfAPIView(generics.ListAPIView):
         response = super().list(request, *args, **kwargs)
         response.data = {'data': response.data}
         return response
+
+
+class BeneficiaryReleaseValidateTokenAPIView(generics.GenericAPIView):
+    permission_classes = ()
+    serializer_class = BeneficiaryReleaseTokenSerializer
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = 'beneficiary_claim'
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        release = get_valid_beneficiary_release(serializer.validated_data['token'])
+        if not release:
+            record_beneficiary_audit(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                details={'event': 'beneficiary_claim_validation_failed'},
+            )
+            return Response(
+                {'error': {'code': 'INVALID_RELEASE_TOKEN', 'message': 'The release link is invalid or expired.'}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({'data': {'valid': True, 'beneficiary_email': mask_email(release.allocation.beneficiary.normalized_email)}})
+
+
+class BeneficiaryReleaseRegistrationAPIView(generics.GenericAPIView):
+    permission_classes = ()
+    serializer_class = BeneficiaryReleaseRegistrationSerializer
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = 'beneficiary_claim'
+
+    @transaction.atomic
+    def post(self, request, *args, **kwargs):
+        input_serializer = self.get_serializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+        release = get_valid_beneficiary_release(data['token'], lock=True)
+        if not release or release.allocation.beneficiary.normalized_email.lower() != data['email'].strip().lower():
+            record_beneficiary_audit(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                details={'event': 'beneficiary_release_registration_rejected'},
+            )
+            return Response(
+                {'error': {'code': 'INVALID_RELEASE_TOKEN', 'message': 'The release link or registration details are invalid.'}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if User.objects.filter(email__iexact=data['email']).exists():
+            return Response(
+                {'error': {'code': 'ACCOUNT_EXISTS', 'message': 'Sign in to your existing account, then claim the release.'}},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        registration_data = {
+            key: data[key]
+            for key in ('email', 'first_name', 'last_name', 'phone_number', 'password', 'password_confirmation')
+            if key in data
+        }
+        registration = RegistrationSerializer(
+            data=registration_data,
+            context={'registration_role': User.Role.BENEFICIARY},
+        )
+        registration.is_valid(raise_exception=True)
+        user = registration.save()
+        record_beneficiary_audit(
+            AuditEvent.EventType.USER_REGISTERED,
+            request=request,
+            target_user=user,
+            details={'role': User.Role.BENEFICIARY, 'registration_source': 'authorized_beneficiary_release'},
+        )
+        send_email_verification(user)
+        return Response(
+            {'data': {'email': user.email, 'account_status': user.account_status},
+             'message': 'Account created. Verify your email, then sign in and claim your authorized allocation.'},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class BeneficiaryReleaseClaimAPIView(generics.GenericAPIView):
+    permission_classes = (IsAuthenticated, IsActiveAccount)
+    serializer_class = BeneficiaryReleaseTokenSerializer
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = 'beneficiary_claim'
+
+    @transaction.atomic
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        release = get_valid_beneficiary_release(serializer.validated_data['token'], lock=True)
+        user = request.user
+        if (
+            not release
+            or user.account_status != User.AccountStatus.ACTIVE
+            or not user.email_verified
+            or release.allocation.beneficiary.normalized_email.lower() != user.email.lower()
+        ):
+            record_beneficiary_audit(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                actor=user,
+                details={'event': 'beneficiary_release_claim_rejected'},
+            )
+            return Response(
+                {'error': {'code': 'INVALID_RELEASE_CLAIM', 'message': 'The release link is invalid, expired, or not assigned to this account.'}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        relationship = WillBeneficiary.objects.select_for_update().get(pk=release.allocation.beneficiary_id)
+        if relationship.beneficiary_user_id not in (None, user.pk) or relationship.status in (
+            WillBeneficiary.Status.DECLINED,
+            WillBeneficiary.Status.REVOKED,
+        ):
+            record_beneficiary_audit(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                actor=user,
+                details={'event': 'beneficiary_release_claim_conflict', 'relationship_id': relationship.pk},
+            )
+            return Response(
+                {'error': {'code': 'INVALID_RELEASE_CLAIM', 'message': 'The release link is invalid, expired, or not assigned to this account.'}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        relationship.beneficiary_user = user
+        relationship.status = WillBeneficiary.Status.ACTIVE
+        relationship.accepted_at = relationship.accepted_at or timezone.now()
+        relationship.save(update_fields=['beneficiary_user', 'status', 'accepted_at', 'updated_at'])
+        release.access_token_hash = None
+        release.token_expires_at = None
+        release.status = BeneficiaryRelease.Status.ACKNOWLEDGED
+        release.save(update_fields=['access_token_hash', 'token_expires_at', 'status', 'updated_at'])
+        record_beneficiary_audit(
+            AuditEvent.EventType.SECURITY_ALERT,
+            request=request,
+            actor=user,
+            details={'event': 'beneficiary_release_claimed', 'release_id': release.pk, 'relationship_id': relationship.pk},
+        )
+        return Response({'data': {'claimed': True}, 'message': 'Release claimed. Your authorized allocation is available in your account.'})
+
+
+class MyBeneficiaryAllocationQueryMixin:
+    serializer_class = BeneficiaryAllocationAccessSerializer
+    permission_classes = (IsAuthenticated, IsActiveAccount)
+
+    def get_queryset(self):
+        return BeneficiaryAllocation.objects.filter(
+            beneficiary__beneficiary_user=self.request.user,
+            beneficiary__normalized_email__iexact=self.request.user.email,
+            beneficiary__status=WillBeneficiary.Status.ACTIVE,
+            review_status=BeneficiaryAllocation.ReviewStatus.VERIFIED,
+            release_authorization__status__in=[
+                BeneficiaryRelease.Status.AUTHORIZED,
+                BeneficiaryRelease.Status.ACKNOWLEDGED,
+            ],
+            release_authorization__case__case_type=VerificationCase.CaseType.POST_DEATH_VERIFY,
+            release_authorization__case__status=VerificationCase.Status.APPROVED,
+            reviewed_case=F('release_authorization__case'),
+        ).select_related('beneficiary__will', 'release_authorization__case')
+
+    def mark_first_accesses(self, allocations, request):
+        for allocation in allocations:
+            release = allocation.release_authorization
+            if not release.first_accessed_at:
+                release.first_accessed_at = timezone.now()
+                release.status = BeneficiaryRelease.Status.ACKNOWLEDGED
+                release.save(update_fields=['first_accessed_at', 'status', 'updated_at'])
+            record_beneficiary_audit(
+                AuditEvent.EventType.BENEFICIARY_ALLOCATION_ACCESSED,
+                request=request,
+                actor=request.user,
+                details={'release_id': release.pk, 'allocation_id': allocation.pk},
+            )
+
+
+class MyBeneficiaryAllocationsAPIView(MyBeneficiaryAllocationQueryMixin, generics.ListAPIView):
+    @transaction.atomic
+    def list(self, request, *args, **kwargs):
+        allocations = list(self.get_queryset())
+        self.mark_first_accesses(allocations, request)
+        return Response({'data': self.get_serializer(allocations, many=True).data})
+
+
+class MyBeneficiaryAllocationDetailAPIView(MyBeneficiaryAllocationQueryMixin, generics.RetrieveAPIView):
+    def get_object(self):
+        allocation = self.get_queryset().filter(pk=self.kwargs['pk']).first()
+        if not allocation:
+            record_beneficiary_audit(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=self.request,
+                actor=self.request.user,
+                details={'event': 'beneficiary_allocation_access_denied', 'allocation_id': self.kwargs['pk']},
+            )
+            raise Http404
+        self.check_object_permissions(self.request, allocation)
+        return allocation
+
+    @transaction.atomic
+    def retrieve(self, request, *args, **kwargs):
+        allocation = self.get_object()
+        self.mark_first_accesses([allocation], request)
+        return Response({'data': self.get_serializer(allocation).data})

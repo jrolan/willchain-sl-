@@ -5,6 +5,7 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
 from apps.audit.models import AuditEvent
+from apps.verification.models import VerificationCase, WillDisclosureAuthorization
 from .models import Will
 
 
@@ -447,6 +448,97 @@ class WillManagementApiTests(APITestCase):
         self.assertEqual(self.client.post(reverse('wills:will-list'), {'title': 'Lawyer Will'}, format='json', **headers).status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(self.client.patch(reverse('wills:will-detail', args=[will.pk]), {'title': 'Tampered'}, format='json', **headers).status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(self.client.post(reverse('wills:will-finalize', args=[will.pk]), **headers).status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_assigned_lawyer_can_read_but_never_modify_will(self):
+        owner = self.active_user(email='assigned-read-owner@example.com')
+        lawyer = self.active_user(email='assigned-read-lawyer@example.com', role=User.Role.LAWYER_VERIFIER)
+        will = Will.objects.create(
+            owner=owner,
+            title='Read-only estate',
+            content={'body': 'confidential owner-authored terms'},
+            status=Will.Status.FINALIZED,
+        )
+        VerificationCase.objects.create(
+            will=will,
+            initiator=owner,
+            assigned_lawyer=lawyer,
+            case_type=VerificationCase.CaseType.POST_DEATH_VERIFY,
+            submission_type=VerificationCase.SubmissionType.BENEFICIARY_CLAIM,
+            status=VerificationCase.Status.UNDER_REVIEW,
+        )
+
+        headers = self.auth_headers(lawyer)
+        read_response = self.client.get(reverse('wills:will-lawyer-view', args=[will.pk]), **headers)
+        update_response = self.client.patch(
+            reverse('wills:will-detail', args=[will.pk]),
+            {'content': {'body': 'tampered'}},
+            format='json',
+            **headers,
+        )
+        delete_response = self.client.delete(reverse('wills:will-lawyer-view', args=[will.pk]), **headers)
+        finalize_response = self.client.post(reverse('wills:will-finalize', args=[will.pk]), **headers)
+
+        self.assertEqual(read_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(read_response.data['data']['content']['body'], 'confidential owner-authored terms')
+        self.assertEqual(update_response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(delete_response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertEqual(finalize_response.status_code, status.HTTP_404_NOT_FOUND)
+        will.refresh_from_db()
+        self.assertEqual(will.content['body'], 'confidential owner-authored terms')
+        access_event = AuditEvent.objects.filter(
+            event_type=AuditEvent.EventType.WILL_ACCESSED,
+            actor=lawyer,
+            details__access_scope='LAWYER_READ_ONLY',
+        ).latest('created_at')
+        self.assertNotIn('confidential owner-authored terms', str(access_event.details))
+
+    def test_unassigned_lawyer_read_is_denied_and_audited(self):
+        owner = self.active_user(email='unassigned-read-owner@example.com')
+        lawyer = self.active_user(email='unassigned-read-lawyer@example.com', role=User.Role.LAWYER_VERIFIER)
+        will = Will.objects.create(owner=owner, title='Private will', content={'body': 'private'})
+
+        response = self.client.get(
+            reverse('wills:will-lawyer-view', args=[will.pk]),
+            **self.auth_headers(lawyer),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(AuditEvent.objects.filter(
+            event_type=AuditEvent.EventType.WILL_ACCESS_DENIED,
+            actor=lawyer,
+            details__operation='LAWYER_READ',
+        ).exists())
+
+    def test_pre_death_lawyer_read_requires_active_owner_disclosure(self):
+        owner = self.active_user(email='predath-read-owner@example.com')
+        lawyer = self.active_user(email='predath-read-lawyer@example.com', role=User.Role.LAWYER_VERIFIER)
+        will = Will.objects.create(owner=owner, title='Pre-death will', content={'body': 'private terms'}, status=Will.Status.FINALIZED)
+        case = VerificationCase.objects.create(
+            will=will,
+            initiator=owner,
+            assigned_lawyer=lawyer,
+            case_type=VerificationCase.CaseType.PRE_DEATH_REVIEW,
+            submission_type=VerificationCase.SubmissionType.OWNER_INITIATED,
+            status=VerificationCase.Status.UNDER_REVIEW,
+        )
+        headers = self.auth_headers(lawyer)
+
+        denied = self.client.get(reverse('wills:will-lawyer-view', args=[will.pk]), **headers)
+        self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
+
+        WillDisclosureAuthorization.objects.create(
+            case=case,
+            authorised_by=owner,
+            storage_key='a' * 64,
+            original_filename='disclosed-copy.pdf',
+            media_type='application/pdf',
+            file_size=1024,
+            checksum_sha256='b' * 64,
+            is_active=True,
+        )
+        allowed = self.client.get(reverse('wills:will-lawyer-view', args=[will.pk]), **headers)
+        self.assertEqual(allowed.status_code, status.HTTP_200_OK)
+        self.assertEqual(allowed.data['data']['content']['body'], 'private terms')
 
     def test_witness_cannot_access_or_manipulate_private_will(self):
         owner = self.active_user(email='owner_witness_test@example.com')

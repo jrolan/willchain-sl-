@@ -1,7 +1,4 @@
-from django.conf import settings
-from django.core.mail import send_mail
 from apps.audit.models import AuditEvent
-from urllib.parse import urlencode
 
 
 def record_beneficiary_audit(event_type, request=None, actor=None, target_user=None, details=None):
@@ -19,20 +16,4 @@ def record_beneficiary_audit(event_type, request=None, actor=None, target_user=N
         ip_address=ip_address or None,
         user_agent=user_agent,
         details=details or {},
-    )
-
-
-def send_beneficiary_invitation_email(invitation, raw_token):
-    invitation_url = (
-        f"{settings.FRONTEND_BASE_URL.rstrip('/')}/beneficiary-invitation?"
-        f"{urlencode({'token': raw_token})}"
-    )
-    send_mail(
-        'You have been invited to WillChain SL',
-        f'You have been invited to join a will as a beneficiary.\n\n'
-        f'Invitation link: {invitation_url}\n\n'
-        f'This link expires in 7 days.',
-        settings.DEFAULT_FROM_EMAIL,
-        [invitation.recipient_email],
-        fail_silently=False,
     )

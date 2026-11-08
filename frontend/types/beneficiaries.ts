@@ -35,6 +35,31 @@ export interface BeneficiarySelfRelationship {
   created_at: string;
 }
 
+export interface BeneficiaryAllocationAccess {
+  id: number;
+  will_title: string;
+  allocation_type: "FIXED_AMOUNT" | "PERCENTAGE" | "SPECIFIC_ITEM";
+  description: string;
+  amount: string | null;
+  currency_code: string;
+  percentage: string | null;
+  release_status: "AUTHORIZED" | "ACKNOWLEDGED";
+  released_at: string;
+}
+
+export interface BeneficiaryAllocationRecord {
+  id: number;
+  beneficiary: number;
+  allocation_type: "FIXED_AMOUNT" | "PERCENTAGE" | "SPECIFIC_ITEM";
+  description: string;
+  amount: string | null;
+  currency_code: string;
+  percentage: string | null;
+  review_status: "PENDING" | "VERIFIED" | "WITHHELD";
+  reviewed_by: number | null;
+  reviewed_at: string | null;
+}
+
 export type BeneficiaryRelationshipType = "PRIMARY" | "CONTINGENT" | "RESIDUAL" | "WITNESS" | "LAWYER";
 
 export interface CreateBeneficiaryRelationship {

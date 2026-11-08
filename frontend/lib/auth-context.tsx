@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
-import { getProfile, login, logout, register } from "@/services/auth-service";
+import { getProfile, googleLogin, login, logout, register } from "@/services/auth-service";
 import type { User } from "@/types/auth";
 
 type AuthContextValue = {
@@ -10,6 +10,7 @@ type AuthContextValue = {
   busy: boolean;
   initialLoading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  signInWithGoogle: (idToken: string) => Promise<void>;
   signUp: (payload: Record<string, string>) => Promise<void>;
   signOut: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -66,6 +67,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function signInWithGoogle(idToken: string) {
+    setBusy(true);
+    try {
+      setUser(await googleLogin(idToken));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function signUp(payload: Record<string, string>) {
     setBusy(true);
     try {
@@ -87,7 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, busy, initialLoading, signIn, signUp, signOut, refreshUser, setUser }}
+      value={{ user, busy, initialLoading, signIn, signInWithGoogle, signUp, signOut, refreshUser, setUser }}
     >
       {children}
     </AuthContext.Provider>

@@ -1,7 +1,12 @@
 from django.urls import path
 
 from .views import (
+    BeneficiaryReleaseNotificationRetryAPIView,
     CaseAssignLawyerAPIView,
+    CaseAuthorizeBeneficiaryReleaseAPIView,
+    CaseBeneficiaryAllocationReviewAPIView,
+    CaseBeneficiaryAllocationListAPIView,
+    CaseBeneficiaryReleaseStatusAPIView,
     CaseBeginReviewAPIView,
     CaseDecisionAPIView,
     CaseEligibilityAPIView,
@@ -35,6 +40,11 @@ urlpatterns = [
     path('cases/<int:pk>/request-information/', CaseInformationRequestAPIView.as_view(), name='case-request-information'),
     path('cases/<int:pk>/resubmit/', CaseResubmitAPIView.as_view(), name='case-resubmit'),
     path('cases/<int:pk>/decision/', CaseDecisionAPIView.as_view(), name='case-decision'),
+    path('cases/<int:pk>/allocations/<int:allocation_pk>/review/', CaseBeneficiaryAllocationReviewAPIView.as_view(), name='case-allocation-review'),
+    path('cases/<int:pk>/allocations/', CaseBeneficiaryAllocationListAPIView.as_view(), name='case-allocations'),
+    path('cases/<int:pk>/authorize-release/', CaseAuthorizeBeneficiaryReleaseAPIView.as_view(), name='case-authorize-release'),
+    path('cases/<int:pk>/release-status/', CaseBeneficiaryReleaseStatusAPIView.as_view(), name='case-release-status'),
+    path('releases/<int:pk>/retry-notification/', BeneficiaryReleaseNotificationRetryAPIView.as_view(), name='release-notification-retry'),
     path('cases/<int:pk>/withdraw/', CaseWithdrawAPIView.as_view(), name='case-withdraw'),
     path('cases/<int:pk>/authorize-disclosure/', WillDisclosureAuthorizeAPIView.as_view(), name='case-authorize-disclosure'),
     path('cases/<int:pk>/revoke-disclosure/', WillDisclosureRevokeAPIView.as_view(), name='case-revoke-disclosure'),

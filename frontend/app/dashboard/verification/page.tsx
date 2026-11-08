@@ -7,28 +7,28 @@ import {
   Clock,
   Download,
   FileCheck,
-  FileText,
   Gavel,
-  Lock,
   PlusCircle,
   RefreshCw,
   Send,
   Upload,
-  UserCheck,
-  XCircle,
 } from "lucide-react";
 
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { useAuth } from "@/lib/auth-context";
 import {
   assessEligibility,
+  authorizeCaseBeneficiaryReleases,
   authorizeDisclosure,
   beginReview,
   createCase,
   downloadDisclosure,
   downloadEvidence,
   getCases,
+  getCaseAllocations,
+  getLawyerWill,
   recordDecision,
+  reviewCaseAllocation,
   requestInformation,
   resubmitCase,
   revokeDisclosure,
@@ -39,12 +39,14 @@ import {
 } from "@/services/verification-service";
 import type {
   CaseEvidence,
+  CaseBeneficiaryAllocation,
   CaseStatus,
   CaseType,
   EvidenceType,
   SubmissionType,
   VerificationCase,
 } from "@/types/verification";
+import type { LawyerWillContent } from "@/types/wills";
 
 const PRE_DEATH_DISCLAIMER =
   "This is a pre-death legal review. No approval from this review affects the legal validity of your will or grants any person access to your will's contents. A pre-death review is for your own preparation and awareness only. You must explicitly authorise any disclosure of a will copy to your assigned verifier.";
@@ -63,6 +65,12 @@ export default function VerificationDashboardPage() {
   const { user } = useAuth();
   const [cases, setCases] = useState<VerificationCase[]>([]);
   const [selectedCase, setSelectedCase] = useState<VerificationCase | null>(null);
+  const [lawyerWill, setLawyerWill] = useState<LawyerWillContent | null>(null);
+  const [lawyerWillCaseId, setLawyerWillCaseId] = useState<number | null>(null);
+  const [loadingLawyerWill, setLoadingLawyerWill] = useState(false);
+  const [caseAllocations, setCaseAllocations] = useState<CaseBeneficiaryAllocation[]>([]);
+  const [allocationCaseId, setAllocationCaseId] = useState<number | null>(null);
+  const [selectedReleaseIds, setSelectedReleaseIds] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,6 +94,10 @@ export default function VerificationDashboardPage() {
 
   // Will copy disclosure file
   const [disclosureFile, setDisclosureFile] = useState<File | null>(null);
+  const selectedCaseId = selectedCase?.id;
+  const selectedWillId = selectedCase?.will;
+  const selectedCaseType = selectedCase?.case_type;
+  const selectedCaseStatus = selectedCase?.status;
 
   const fetchCases = async () => {
     try {
@@ -106,8 +118,74 @@ export default function VerificationDashboardPage() {
   };
 
   useEffect(() => {
-    fetchCases();
+    let active = true;
+    getCases()
+      .then(({ data }) => {
+        if (active) setCases(data);
+      })
+      .catch((requestError: unknown) => {
+        if (active) setError(requestError instanceof Error ? requestError.message : "Failed to load verification cases.");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
+
+  useEffect(() => {
+    if (user?.role !== "LAWYER_VERIFIER" || !selectedWillId || !selectedCaseId) {
+      return;
+    }
+    let active = true;
+    getLawyerWill(selectedWillId)
+      .then(({ data }) => {
+        if (active) {
+          setLawyerWill(data);
+          setLawyerWillCaseId(selectedCaseId);
+        }
+      })
+      .catch((requestError: unknown) => {
+        if (active) {
+          setLawyerWill(null);
+          setError(requestError instanceof Error ? requestError.message : "Unable to read the authorized will.");
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingLawyerWill(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedCaseId, selectedWillId, user?.role]);
+
+  useEffect(() => {
+    const hasAllocationPermission = user?.role === "LAWYER_VERIFIER" || user?.role === "ADMINISTRATOR";
+    if (!hasAllocationPermission || !selectedCaseId || selectedCaseType !== "POST_DEATH_VERIFY" || !["UNDER_REVIEW", "APPROVED"].includes(selectedCaseStatus ?? "")) {
+      return;
+    }
+    let active = true;
+    getCaseAllocations(selectedCaseId)
+      .then(({ data }) => {
+        if (active) {
+          setCaseAllocations(data);
+          setAllocationCaseId(selectedCaseId);
+        }
+      })
+      .catch((requestError: unknown) => {
+        if (active) setError(requestError instanceof Error ? requestError.message : "Unable to load beneficiary allocations.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedCaseId, selectedCaseType, selectedCaseStatus, user?.role]);
+
+  function selectCase(caseItem: VerificationCase) {
+    setSelectedCase(caseItem);
+    setSelectedReleaseIds([]);
+    setLoadingLawyerWill(user?.role === "LAWYER_VERIFIER" && Boolean(caseItem.will));
+  }
 
   const handleCreateCase = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -125,7 +203,7 @@ export default function VerificationDashboardPage() {
       const res = await createCase(payload);
       setSuccessMessage(res.message || "Verification case created.");
       await fetchCases();
-      setSelectedCase(res.data);
+      selectCase(res.data);
       setWillId("");
       setClaimedBasis("");
     } catch (err: unknown) {
@@ -378,6 +456,38 @@ export default function VerificationDashboardPage() {
     }
   };
 
+  const handleAllocationReview = async (allocation: CaseBeneficiaryAllocation, reviewStatus: "VERIFIED" | "WITHHELD") => {
+    if (!selectedCase) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await reviewCaseAllocation(selectedCase.id, allocation.id, reviewStatus);
+      const { data } = await getCaseAllocations(selectedCase.id);
+      setCaseAllocations(data);
+      setSuccessMessage(`Allocation marked ${reviewStatus.toLowerCase()}.`);
+    } catch (requestError: unknown) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to update allocation review.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAuthorizeReleases = async () => {
+    if (!selectedCase || selectedReleaseIds.length === 0) return;
+    setBusy(true);
+    setError(null);
+    setSuccessMessage(null);
+    try {
+      const response = await authorizeCaseBeneficiaryReleases(selectedCase.id, selectedReleaseIds);
+      setSuccessMessage(response.message);
+      setSelectedReleaseIds([]);
+    } catch (requestError: unknown) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to authorize these releases.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const isLawyer = user?.role === "LAWYER_VERIFIER";
 
   return (
@@ -535,7 +645,7 @@ export default function VerificationDashboardPage() {
                 {cases.map((c) => (
                   <li key={c.id}>
                     <button
-                      onClick={() => setSelectedCase(c)}
+                      onClick={() => selectCase(c)}
                       className={`w-full rounded-lg p-3 text-left transition ${
                         selectedCase?.id === c.id
                           ? "bg-blue-50 border border-blue-200 dark:bg-blue-950/40 dark:border-blue-900"
@@ -621,6 +731,87 @@ export default function VerificationDashboardPage() {
                       {selectedCase.claimed_executor_basis || "No basis provided."}
                     </p>
                   </div>
+                )}
+
+                {isLawyer && selectedCase.will && (
+                  <section aria-label="Read-only will content" className="border-y border-slate-200 py-5 dark:border-slate-800">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h3 className="text-base font-semibold text-slate-900 dark:text-white">Owner&apos;s will · read only</h3>
+                        <p className="mt-1 text-xs text-slate-500">This view provides no editing, deletion, export, or finalization controls.</p>
+                      </div>
+                      {lawyerWill && <span className="text-xs font-medium text-slate-500">Version {lawyerWill.version}</span>}
+                    </div>
+                    {loadingLawyerWill ? (
+                      <p className="mt-4 text-sm text-slate-500">Loading authorized will content...</p>
+                    ) : lawyerWill && lawyerWillCaseId === selectedCase.id ? (
+                      <div className="mt-4 divide-y divide-slate-200 dark:divide-slate-800">
+                        {Object.entries(lawyerWill.content).map(([section, value]) => (
+                          <article key={section} className="py-4 first:pt-0 last:pb-0">
+                            <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{section.replaceAll("_", " ")}</h4>
+                            {typeof value === "string" ? (
+                              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-700 dark:text-slate-300">{value}</p>
+                            ) : (
+                              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap wrap-break-word rounded-md bg-slate-50 p-3 text-xs leading-5 text-slate-700 dark:bg-slate-800 dark:text-slate-300">{JSON.stringify(value, null, 2)}</pre>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-4 text-sm text-slate-500">Will content is unavailable for this case or disclosure is not active.</p>
+                    )}
+                  </section>
+                )}
+
+                {isLawyer && selectedCase.case_type === "POST_DEATH_VERIFY" && ["UNDER_REVIEW", "APPROVED"].includes(selectedCase.status) && (
+                  <section aria-label="Beneficiary allocations for review" className="border-y border-slate-200 py-5 dark:border-slate-800">
+                    <h3 className="text-base font-semibold text-slate-900 dark:text-white">Beneficiary allocations</h3>
+                    <p className="mt-1 text-xs text-slate-500">Review each share independently. Marking a share verified does not release it or send a notification.</p>
+                    {allocationCaseId !== selectedCase.id || caseAllocations.length === 0 ? (
+                      <p className="mt-4 text-sm text-slate-500">No allocation records are available for this case.</p>
+                    ) : (
+                      <ul className="mt-4 divide-y divide-slate-200 dark:divide-slate-800">
+                        {caseAllocations.map((allocation) => (
+                          <li key={allocation.id} className="grid gap-3 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900 dark:text-white">{allocation.beneficiary_name || "Named beneficiary"}</p>
+                              <p className="mt-1 text-xs font-medium uppercase text-slate-500">{allocation.allocation_type.replaceAll("_", " ")} · {allocation.review_status}</p>
+                              <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{allocation.description}</p>
+                              {allocation.amount && <p className="mt-1 text-sm font-medium">{allocation.amount} {allocation.currency_code}</p>}
+                              {allocation.percentage && <p className="mt-1 text-sm font-medium">{allocation.percentage}%</p>}
+                            </div>
+                            <div className="flex gap-2">
+                              <button type="button" disabled={busy || allocation.review_status === "VERIFIED"} onClick={() => handleAllocationReview(allocation, "VERIFIED")} className="border border-emerald-700 px-3 py-2 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-300 dark:hover:bg-emerald-950/30">Verify</button>
+                              <button type="button" disabled={busy || allocation.review_status === "WITHHELD"} onClick={() => handleAllocationReview(allocation, "WITHHELD")} className="border border-rose-700 px-3 py-2 text-xs font-semibold text-rose-800 hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30">Withhold</button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </section>
+                )}
+
+                {isLawyer && selectedCase.case_type === "POST_DEATH_VERIFY" && selectedCase.status === "APPROVED" && (
+                  <section aria-label="Authorize beneficiary releases" className="border-y border-emerald-200 py-5 dark:border-emerald-900">
+                    <h3 className="text-base font-semibold text-slate-900 dark:text-white">Authorize allocation release</h3>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">As the assigned verifier, select only allocations marked VERIFIED. Approval and verification do not release shares automatically; notification does not grant access.</p>
+                    <ul className="mt-3 divide-y divide-slate-200 dark:divide-slate-800">
+                      {caseAllocations.filter((allocation) => allocationCaseId === selectedCase.id && allocation.review_status === "VERIFIED").map((allocation) => (
+                        <li key={allocation.id} className="flex items-center gap-3 py-3">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select allocation for ${allocation.beneficiary_name || "beneficiary"}`}
+                            checked={selectedReleaseIds.includes(allocation.id)}
+                            onChange={(event) => setSelectedReleaseIds((current) => event.target.checked ? [...current, allocation.id] : current.filter((id) => id !== allocation.id))}
+                            className="h-4 w-4 accent-emerald-700"
+                          />
+                          <span className="min-w-0 text-sm text-slate-700 dark:text-slate-300"><strong>{allocation.beneficiary_name || "Named beneficiary"}</strong> · {allocation.allocation_type.replaceAll("_", " ")} · {allocation.description}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    {caseAllocations.filter((allocation) => allocationCaseId === selectedCase.id && allocation.review_status === "VERIFIED").length === 0 && <p className="mt-3 text-sm text-slate-500">No verified allocations are ready for release.</p>}
+                    <button type="button" onClick={handleAuthorizeReleases} disabled={busy || selectedReleaseIds.length === 0} className="mt-4 inline-flex items-center gap-2 bg-emerald-800 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-900 disabled:opacity-50">{busy ? "Authorizing..." : `Authorize ${selectedReleaseIds.length || "selected"} release${selectedReleaseIds.length === 1 ? "" : "s"}`}</button>
+                  </section>
                 )}
 
                 {/* Notes and Request Info */}

@@ -101,6 +101,85 @@ class WillBeneficiary(models.Model):
         return f'{self.full_name or self.normalized_email} ({self.will_id})'
 
 
+class BeneficiaryAllocation(models.Model):
+    class AllocationType(models.TextChoices):
+        FIXED_AMOUNT = 'FIXED_AMOUNT', 'Fixed amount'
+        PERCENTAGE = 'PERCENTAGE', 'Percentage'
+        SPECIFIC_ITEM = 'SPECIFIC_ITEM', 'Specific item'
+
+    class ReviewStatus(models.TextChoices):
+        PENDING = 'PENDING', 'Pending review'
+        VERIFIED = 'VERIFIED', 'Verified'
+        WITHHELD = 'WITHHELD', 'Withheld'
+
+    beneficiary = models.ForeignKey(
+        WillBeneficiary,
+        on_delete=models.CASCADE,
+        related_name='allocations',
+    )
+    allocation_type = models.CharField(max_length=32, choices=AllocationType.choices)
+    description = models.CharField(max_length=500, blank=True)
+    amount = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    currency_code = models.CharField(max_length=3, blank=True)
+    percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    review_status = models.CharField(
+        max_length=16,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.PENDING,
+        db_index=True,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reviewed_beneficiary_allocations',
+    )
+    reviewed_case = models.ForeignKey(
+        'verification.VerificationCase',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reviewed_beneficiary_allocations',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ('created_at',)
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(allocation_type='FIXED_AMOUNT', amount__isnull=False, amount__gte=0, percentage__isnull=True)
+                    & ~Q(currency_code='')
+                    | ~Q(allocation_type='FIXED_AMOUNT')
+                ),
+                name='allocation_fixed_amount_fields',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(allocation_type='PERCENTAGE', percentage__isnull=False, percentage__gte=0, percentage__lte=100, amount__isnull=True, currency_code='')
+                    | ~Q(allocation_type='PERCENTAGE')
+                ),
+                name='allocation_percentage_fields',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(allocation_type='SPECIFIC_ITEM', description__gt='', amount__isnull=True, percentage__isnull=True, currency_code='')
+                    | ~Q(allocation_type='SPECIFIC_ITEM')
+                ),
+                name='allocation_specific_item_fields',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['beneficiary', 'review_status'], name='alloc_ben_review_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.allocation_type} allocation #{self.pk} for beneficiary {self.beneficiary_id}'
+
+
 class BeneficiaryInvitation(models.Model):
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'Pending'

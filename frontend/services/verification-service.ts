@@ -1,10 +1,12 @@
 import { apiDownload, apiRequest } from '@/services/auth-service';
 import type {
   CaseEvidence,
+  CaseBeneficiaryAllocation,
   CreateCasePayload,
   Module8VerificationStatus,
   VerificationCase,
 } from '@/types/verification';
+import type { LawyerWillContent } from '@/types/wills';
 
 const BASE = '/verification';
 
@@ -13,6 +15,24 @@ export const getCases = () =>
 
 export const getCase = (id: number) =>
   apiRequest<{ data: VerificationCase }>(`${BASE}/cases/${id}/`);
+
+export const getLawyerWill = (willId: number) =>
+  apiRequest<{ data: LawyerWillContent }>(`/wills/${willId}/lawyer-view/`);
+
+export const getCaseAllocations = (caseId: number) =>
+  apiRequest<{ data: CaseBeneficiaryAllocation[] }>(`${BASE}/cases/${caseId}/allocations/`);
+
+export const reviewCaseAllocation = (caseId: number, allocationId: number, reviewStatus: "VERIFIED" | "WITHHELD") =>
+  apiRequest<{ data: { allocation_id: number; review_status: string; reviewed_at: string } }>(
+    `${BASE}/cases/${caseId}/allocations/${allocationId}/review/`,
+    { method: "POST", body: JSON.stringify({ review_status: reviewStatus }) },
+  );
+
+export const authorizeCaseBeneficiaryReleases = (caseId: number, allocationIds: number[]) =>
+  apiRequest<{ data: { releases: Array<{ release_id: number; allocation_id: number; status: string }> }; message: string }>(
+    `${BASE}/cases/${caseId}/authorize-release/`,
+    { method: "POST", body: JSON.stringify({ allocation_ids: allocationIds }) },
+  );
 
 export const createCase = (payload: CreateCasePayload) =>
   apiRequest<{ data: VerificationCase; message: string }>(`${BASE}/cases/`, {

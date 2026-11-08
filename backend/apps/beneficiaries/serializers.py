@@ -1,11 +1,9 @@
-from datetime import timedelta
-
 from django.utils import timezone
 from rest_framework import serializers
 
 from apps.accounts.models import User
 from apps.wills.models import Will
-from .models import BeneficiaryInvitation, WillBeneficiary
+from .models import BeneficiaryAllocation, BeneficiaryInvitation, WillBeneficiary
 
 
 class BeneficiaryUserProfileSerializer(serializers.ModelSerializer):
@@ -100,7 +98,7 @@ class CreateWillBeneficiarySerializer(serializers.Serializer):
         if not will:
             raise serializers.ValidationError({'will': 'Will not found or not owned by the current user.'})
         if will.status != Will.Status.DRAFT:
-            raise serializers.ValidationError({'will': 'Only DRAFT wills can accept beneficiary invitations.'})
+            raise serializers.ValidationError({'will': 'Only DRAFT wills can manage beneficiary relationships.'})
         normalized_email = attrs['recipient_email'].lower()
         if WillBeneficiary.objects.filter(
             will=will,
@@ -112,27 +110,64 @@ class CreateWillBeneficiarySerializer(serializers.Serializer):
         return attrs
 
     def create(self, validated_data):
-        request = self.context['request']
         will = validated_data.pop('will')
         email = validated_data.pop('recipient_email')
-        relationship = WillBeneficiary.objects.create(
+        return WillBeneficiary.objects.create(
             will=will,
             normalized_email=email,
             full_name=validated_data.get('full_name', ''),
             relationship_type=validated_data.get('relationship_type', WillBeneficiary.RelationshipType.PRIMARY),
             status=WillBeneficiary.Status.PENDING,
         )
-        raw_token = BeneficiaryInvitation.generate_token()
-        invitation = BeneficiaryInvitation.objects.create(
-            relationship=relationship,
-            inviter=request.user,
-            recipient_email=email,
-            status=BeneficiaryInvitation.Status.PENDING,
-            expires_at=timezone.now() + timedelta(days=7),
-            token_hash=BeneficiaryInvitation.hash_token(raw_token),
+
+
+class BeneficiaryAllocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BeneficiaryAllocation
+        fields = (
+            'id',
+            'beneficiary',
+            'allocation_type',
+            'description',
+            'amount',
+            'currency_code',
+            'percentage',
+            'review_status',
+            'reviewed_by',
+            'reviewed_case',
+            'reviewed_at',
+            'created_at',
+            'updated_at',
         )
-        self.context['raw_invitation_token'] = raw_token
-        return relationship
+        read_only_fields = (
+            'id',
+            'beneficiary',
+            'review_status',
+            'reviewed_by',
+            'reviewed_case',
+            'reviewed_at',
+            'created_at',
+            'updated_at',
+        )
+
+    def validate(self, attrs):
+        instance = getattr(self, 'instance', None)
+        allocation_type = attrs.get('allocation_type', getattr(instance, 'allocation_type', None))
+        amount = attrs.get('amount', getattr(instance, 'amount', None))
+        currency_code = attrs.get('currency_code', getattr(instance, 'currency_code', ''))
+        percentage = attrs.get('percentage', getattr(instance, 'percentage', None))
+        description = attrs.get('description', getattr(instance, 'description', ''))
+
+        if allocation_type == BeneficiaryAllocation.AllocationType.FIXED_AMOUNT:
+            if amount is None or amount < 0 or not currency_code or percentage is not None:
+                raise serializers.ValidationError('Fixed amount allocations require a non-negative amount and currency, and cannot include a percentage.')
+        elif allocation_type == BeneficiaryAllocation.AllocationType.PERCENTAGE:
+            if percentage is None or not 0 <= percentage <= 100 or amount is not None or currency_code:
+                raise serializers.ValidationError('Percentage allocations require a value from 0 to 100 and cannot include an amount or currency.')
+        elif allocation_type == BeneficiaryAllocation.AllocationType.SPECIFIC_ITEM:
+            if not description.strip() or amount is not None or percentage is not None or currency_code:
+                raise serializers.ValidationError('Specific item allocations require a description and cannot include an amount or percentage.')
+        return attrs
 
 
 class AcceptInvitationSerializer(serializers.Serializer):
@@ -160,6 +195,13 @@ class AcceptInvitationSerializer(serializers.Serializer):
             raise serializers.ValidationError({'token': 'This relationship is no longer pending.'})
         if invitation.relationship.will.status != Will.Status.DRAFT:
             raise serializers.ValidationError({'token': 'This will is no longer editable for invitation acceptance.'})
+        if not invitation.relationship.allocations.filter(
+            review_status=BeneficiaryAllocation.ReviewStatus.VERIFIED,
+            release_authorization__status__in=('AUTHORIZED', 'ACKNOWLEDGED'),
+            release_authorization__case__case_type='POST_DEATH_VERIFY',
+            release_authorization__case__status='APPROVED',
+        ).exists():
+            raise serializers.ValidationError({'token': 'No allocation has been authorized for release.'})
 
         attrs['invitation'] = invitation
         attrs['user'] = user
@@ -206,4 +248,38 @@ class BeneficiarySelfRelationshipSerializer(serializers.ModelSerializer):
     class Meta:
         model = WillBeneficiary
         fields = ('id', 'recipient_email', 'full_name', 'relationship_type', 'status', 'accepted_at', 'created_at')
+        read_only_fields = fields
+
+
+class BeneficiaryReleaseTokenSerializer(serializers.Serializer):
+    token = serializers.CharField(required=True, write_only=True, trim_whitespace=False)
+
+
+class BeneficiaryReleaseRegistrationSerializer(BeneficiaryReleaseTokenSerializer):
+    email = serializers.EmailField()
+    first_name = serializers.CharField(max_length=150)
+    last_name = serializers.CharField(max_length=150)
+    phone_number = serializers.CharField(max_length=30, required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+    password_confirmation = serializers.CharField(write_only=True, trim_whitespace=False)
+
+
+class BeneficiaryAllocationAccessSerializer(serializers.ModelSerializer):
+    will_title = serializers.CharField(source='beneficiary.will.title', read_only=True)
+    release_status = serializers.CharField(source='release_authorization.status', read_only=True)
+    released_at = serializers.DateTimeField(source='release_authorization.authorized_at', read_only=True)
+
+    class Meta:
+        model = BeneficiaryAllocation
+        fields = (
+            'id',
+            'will_title',
+            'allocation_type',
+            'description',
+            'amount',
+            'currency_code',
+            'percentage',
+            'release_status',
+            'released_at',
+        )
         read_only_fields = fields

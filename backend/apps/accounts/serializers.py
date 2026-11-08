@@ -18,6 +18,7 @@ class UserSerializer(serializers.ModelSerializer):
             'last_name',
             'phone_number',
             'avatar',
+            'google_sub',
             'role',
             'account_status',
             'email_verified',
@@ -27,6 +28,7 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = (
             'id',
             'email',
+            'google_sub',
             'role',
             'account_status',
             'email_verified',
@@ -81,6 +83,17 @@ class LoginSerializer(serializers.Serializer):
         if not user or user.account_status != User.AccountStatus.ACTIVE or not user.email_verified:
             raise serializers.ValidationError('Invalid credentials or inactive account.')
         attrs['user'] = user
+        return attrs
+
+
+class GoogleIdTokenSerializer(serializers.Serializer):
+    id_token = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate(self, attrs):
+        value = attrs.get('id_token', '')
+        if not value:
+            raise serializers.ValidationError({'id_token': 'Google ID token is required.'})
+        attrs['id_token'] = value
         return attrs
 
 

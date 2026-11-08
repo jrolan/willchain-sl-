@@ -3,6 +3,8 @@ from datetime import timedelta
 from urllib.parse import parse_qs, urlsplit
 from PIL import Image
 
+from unittest.mock import patch
+
 from django.contrib.auth.tokens import default_token_generator
 from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -14,6 +16,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.audit.models import AuditEvent
+from .services import verify_google_id_token
 from .models import Invitation, User
 from .permissions import IsOwner, IsTestator
 
@@ -40,6 +43,17 @@ class AuthenticationApiTests(APITestCase):
 		values.update(overrides)
 		password = values.pop('password')
 		return User.objects.create_user(password=password, **values)
+
+	@staticmethod
+	def patch_google_token(payload):
+		return patch('apps.accounts.views.verify_google_id_token', return_value=payload)
+
+	def test_google_token_verification_fails_closed_without_google_auth(self):
+		with patch('apps.accounts.services.google_id_token', None), patch(
+			'apps.accounts.services.google_requests', None
+		):
+			with self.assertRaises(ValueError):
+				verify_google_id_token('unverified-token', 'client-123')
 
 	# --- 1. REGISTRATION TESTS ---
 
@@ -155,6 +169,115 @@ class AuthenticationApiTests(APITestCase):
 			format='json',
 		)
 		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+	def test_google_login_registers_new_owner_pending_verification_without_jwt(self):
+		with self.settings(GOOGLE_OAUTH2_CLIENT_ID='client-123'):
+			with self.patch_google_token(
+				{'sub': 'google-user-1', 'email': 'new-google-user@example.com', 'email_verified': True, 'given_name': 'New', 'family_name': 'User'}
+			):
+				response = self.client.post(
+					reverse('accounts:google-login'),
+					{'id_token': 'token-abc'},
+					format='json',
+				)
+
+		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+		user = User.objects.get(email='new-google-user@example.com')
+		self.assertEqual(user.google_sub, 'google-user-1')
+		self.assertEqual(user.role, User.Role.OWNER)
+		self.assertEqual(user.account_status, User.AccountStatus.PENDING_VERIFICATION)
+		self.assertFalse(user.email_verified)
+		self.assertFalse(user.is_active)
+		self.assertNotIn('access', response.data.get('data', {}))
+		self.assertTrue(AuditEvent.objects.filter(event_type=AuditEvent.EventType.USER_REGISTERED, target_user=user).exists())
+
+	def test_google_login_preserves_existing_account_role(self):
+		user = self.active_user(email='lawyer-google@example.com', role=User.Role.LAWYER_VERIFIER)
+		with self.settings(GOOGLE_OAUTH2_CLIENT_ID='client-123'):
+			with self.patch_google_token(
+				{'sub': 'google-lawyer-1', 'email': user.email, 'email_verified': True}
+			):
+				response = self.client.post(
+					reverse('accounts:google-login'),
+					{'id_token': 'token-lawyer'},
+					format='json',
+				)
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(response.data['data']['user']['role'], User.Role.LAWYER_VERIFIER)
+
+	def test_google_login_rejects_unverified_email(self):
+		with self.settings(GOOGLE_OAUTH2_CLIENT_ID='client-123'):
+			with self.patch_google_token(
+				{'sub': 'google-unverified', 'email': 'unverified@example.com', 'email_verified': False}
+			):
+				response = self.client.post(
+					reverse('accounts:google-login'),
+					{'id_token': 'token-unverified'},
+					format='json',
+				)
+
+		self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+		self.assertFalse(User.objects.filter(email='unverified@example.com').exists())
+		self.assertNotIn('access', response.data.get('data', {}))
+
+	def test_google_login_rejects_conflicting_subject_link(self):
+		linked = self.active_user(email='google-owner-one@example.com', google_sub='google-shared-sub')
+		other = self.active_user(email='google-owner-two@example.com')
+		with self.settings(GOOGLE_OAUTH2_CLIENT_ID='client-123'):
+			with self.patch_google_token(
+				{'sub': 'google-shared-sub', 'email': other.email, 'email_verified': True}
+			):
+				response = self.client.post(
+					reverse('accounts:google-login'),
+					{'id_token': 'token-shared-sub'},
+					format='json',
+				)
+
+		self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+		other.refresh_from_db()
+		self.assertIsNone(other.google_sub)
+		self.assertEqual(linked.google_sub, 'google-shared-sub')
+		self.assertNotIn('access', response.data.get('data', {}))
+
+	def test_google_login_rejects_inactive_existing_account(self):
+		user = self.active_user(
+			email='inactive-google@example.com',
+			account_status=User.AccountStatus.SUSPENDED,
+		)
+		with self.settings(GOOGLE_OAUTH2_CLIENT_ID='client-123'):
+			with self.patch_google_token(
+				{'sub': 'google-inactive', 'email': user.email, 'email_verified': True}
+			):
+				response = self.client.post(
+					reverse('accounts:google-login'),
+					{'id_token': 'token-inactive'},
+					format='json',
+				)
+
+		self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+		user.refresh_from_db()
+		self.assertFalse(user.google_sub)
+		self.assertNotIn('access', response.data.get('data', {}))
+
+	def test_google_link_binds_google_account_to_matching_local_user(self):
+		user = self.active_user(email='linked@example.com')
+		refresh = __import__('rest_framework_simplejwt.tokens', fromlist=['RefreshToken']).RefreshToken.for_user(user)
+		self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {refresh.access_token}')
+
+		with self.settings(GOOGLE_OAUTH2_CLIENT_ID='client-123'):
+			with self.patch_google_token(
+				{'sub': 'google-user-2', 'email': 'linked@example.com', 'email_verified': True, 'given_name': 'Linked', 'family_name': 'User'}
+			):
+				response = self.client.post(
+					reverse('accounts:google-link'),
+					{'id_token': 'token-xyz'},
+					format='json',
+				)
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		user.refresh_from_db()
+		self.assertEqual(user.google_sub, 'google-user-2')
 
 	# --- 3. REFRESH TOKEN & ROTATION TESTS ---
 

@@ -106,3 +106,10 @@ class WillSerializer(serializers.ModelSerializer):
         instance.version += 1
         instance.save(update_fields=['version', 'updated_at'])
         return instance
+
+
+class LawyerWillReadOnlySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Will
+        fields = ('title', 'content', 'status', 'version', 'finalized_at')
+        read_only_fields = fields
