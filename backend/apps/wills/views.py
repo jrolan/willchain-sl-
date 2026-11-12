@@ -3,17 +3,19 @@ from django.db.models import Exists, OuterRef, Q
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from apps.accounts.models import Invitation
 from apps.accounts.permissions import CanManageOwnWills, IsActiveAccount, IsOwner
 from apps.audit.models import AuditEvent
 from apps.accounts.services import log_audit_event
 from apps.verification.models import VerificationCase
 from apps.verification.permissions import IsAssignedLawyerOnAuthorizedCase
-from .models import Will
-from .serializers import LawyerWillReadOnlySerializer, WillSerializer
+from apps.integrity.services import create_will_integrity_record
+from .models import Will, WitnessAttestation
+from .serializers import LawyerWillReadOnlySerializer, WillSerializer, WitnessAttestationInputSerializer, WitnessAssignmentSerializer
 
 
 class WillListCreateAPIView(generics.ListCreateAPIView):
@@ -169,6 +171,97 @@ class LawyerWillViewAPIView(generics.RetrieveAPIView):
         return Response({'data': serializer.data})
 
 
+class MyWitnessAssignmentsAPIView(generics.GenericAPIView):
+    permission_classes = (IsAuthenticated, IsActiveAccount)
+    serializer_class = WitnessAssignmentSerializer
+
+    def get(self, request, *args, **kwargs):
+        invitations = Invitation.objects.filter(
+            accepted_user=request.user,
+            status=Invitation.Status.ACCEPTED,
+            role=Invitation.RoleChoices.WITNESS,
+            will__isnull=False,
+        ).select_related('will').order_by('-created_at')
+        assignments = []
+        for invitation in invitations:
+            attestation = getattr(invitation, 'witness_attestation', None)
+            assignments.append({
+                'invitation_id': invitation.pk,
+                'will_id': invitation.will_id,
+                'will_title': invitation.will.title,
+                'will_status': invitation.will.status,
+                'will_version': invitation.will.version,
+                'attestation_status': (
+                    attestation.status if attestation else
+                    'PENDING' if invitation.will.status == Will.Status.FINALIZED else
+                    'NOT_READY'
+                ),
+                'responded_at': attestation.responded_at if attestation else None,
+                'attested_version': attestation.will_version if attestation else None,
+            })
+        return Response({'data': self.get_serializer(assignments, many=True).data})
+
+
+class WitnessAttestationAPIView(generics.GenericAPIView):
+    permission_classes = (IsAuthenticated, IsActiveAccount)
+    serializer_class = WitnessAttestationInputSerializer
+
+    @transaction.atomic
+    def post(self, request, pk, *args, **kwargs):
+        invitation = Invitation.objects.select_for_update().filter(
+            pk=pk,
+            accepted_user=request.user,
+            status=Invitation.Status.ACCEPTED,
+            role=Invitation.RoleChoices.WITNESS,
+            will__isnull=False,
+        ).select_related('will').first()
+        if not invitation:
+            raise NotFound('Witness assignment not found.')
+        if invitation.will.status != Will.Status.FINALIZED:
+            raise ValidationError('Witness attestation is available only for a finalized will.')
+        if WitnessAttestation.objects.filter(invitation=invitation).exists():
+            return Response(
+                {'error': {'code': 'ATTESTATION_ALREADY_RECORDED', 'message': 'A witness response has already been recorded.'}},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        input_serializer = self.get_serializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        attestation = WitnessAttestation.objects.create(
+            invitation=invitation,
+            will=invitation.will,
+            witness=request.user,
+            status=input_serializer.validated_data['decision'],
+            will_version=invitation.will.version,
+            will_content_hash=WitnessAttestation.hash_will_content(invitation.will.content),
+        )
+        log_audit_event(
+            AuditEvent.EventType.SECURITY_ALERT,
+            request=request,
+            actor=request.user,
+            target_user=invitation.inviter,
+            details={
+                'event': 'witness_attestation_recorded',
+                'attestation_id': attestation.pk,
+                'invitation_id': invitation.pk,
+                'will_id': invitation.will_id,
+                'will_version': attestation.will_version,
+                'decision': attestation.status,
+                'will_content_hash': attestation.will_content_hash,
+            },
+        )
+        return Response({
+            'data': {
+                'invitation_id': invitation.pk,
+                'will_id': invitation.will_id,
+                'status': attestation.status,
+                'will_version': attestation.will_version,
+                'responded_at': attestation.responded_at,
+            },
+            'message': 'Your witness response has been recorded. This record is not an electronic signature or legal validation.',
+        }, status=status.HTTP_201_CREATED)
+
+
 class FinalizeWillAPIView(generics.GenericAPIView):
     serializer_class = WillSerializer
     permission_classes = (IsAuthenticated, IsActiveAccount, IsOwner)
@@ -198,6 +291,7 @@ class FinalizeWillAPIView(generics.GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         will.finalize()
+        create_will_integrity_record(will)
         log_audit_event(
             AuditEvent.EventType.WILL_FINALIZED,
             request=request,

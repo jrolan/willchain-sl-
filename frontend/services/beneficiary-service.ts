@@ -139,3 +139,10 @@ export function claimBeneficiaryRelease(token: string): Promise<{ data: { claime
     body: JSON.stringify({ token }),
   });
 }
+
+export function verifyBeneficiaryReleaseIdentity(token: string, code: string): Promise<{ data: { verified: true }; message: string }> {
+  return apiRequest("/beneficiary-release/verify-identity/", {
+    method: "POST",
+    body: JSON.stringify({ token, code }),
+  });
+}

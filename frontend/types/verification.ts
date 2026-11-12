@@ -67,6 +67,8 @@ export interface EligibilityAssessment {
 export interface VerificationCase {
   id: number;
   will: number | null;
+  initiator_id: number;
+  assigned_lawyer_id: number | null;
   case_type: CaseType;
   submission_type: SubmissionType;
   status: CaseStatus;
@@ -110,4 +112,3 @@ export interface Module8VerificationStatus {
   status: CaseStatus;
   approved_at: string | null;
 }
-

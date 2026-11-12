@@ -5,6 +5,8 @@ from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
 from rest_framework import serializers
 
+from apps.wills.models import Will
+
 from .models import Invitation, User
 
 
@@ -154,6 +156,8 @@ class InvitationAcceptedUserSerializer(serializers.ModelSerializer):
 class InvitationSerializer(serializers.ModelSerializer):
     inviter_email = serializers.ReadOnlyField(source='inviter.email')
     accepted_user_profile = InvitationAcceptedUserSerializer(source='accepted_user', read_only=True)
+    will_title = serializers.CharField(source='will.title', read_only=True)
+    will = serializers.PrimaryKeyRelatedField(queryset=Will.objects.all())
 
     class Meta:
         model = Invitation
@@ -165,12 +169,14 @@ class InvitationSerializer(serializers.ModelSerializer):
             'last_name',
             'accepted_user_profile',
             'role',
+            'will',
+            'will_title',
             'status',
             'message',
             'expires_at',
             'created_at',
         )
-        read_only_fields = ('id', 'inviter_email', 'status', 'expires_at', 'created_at')
+        read_only_fields = ('id', 'inviter_email', 'will_title', 'status', 'expires_at', 'created_at')
 
     def validate_role(self, value):
         if value not in (Invitation.RoleChoices.WITNESS, Invitation.RoleChoices.LAWYER_VERIFIER):
@@ -180,10 +186,20 @@ class InvitationSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         request = self.context.get('request')
         email = attrs['email'].lower()
+        will = attrs['will']
+        if request and will.owner_id != request.user.pk:
+            raise serializers.ValidationError({'will': 'Choose a will owned by your account.'})
+        if will.status == Will.Status.ARCHIVED:
+            raise serializers.ValidationError({'will': 'Archived wills cannot receive collaborator invitations.'})
         if request and request.user.email.lower() == email:
             raise serializers.ValidationError({'email': 'You cannot invite yourself.'})
-        if Invitation.objects.filter(email__iexact=email, status=Invitation.Status.PENDING).exists():
-            raise serializers.ValidationError({'email': 'A pending invitation already exists for this email.'})
+        if Invitation.objects.filter(
+            inviter=request.user if request else None,
+            will=will,
+            email__iexact=email,
+            status=Invitation.Status.PENDING,
+        ).exists():
+            raise serializers.ValidationError({'email': 'A pending invitation already exists for this email and will.'})
         attrs['email'] = email
         return attrs
 
@@ -194,5 +210,4 @@ class InvitationSerializer(serializers.ModelSerializer):
         invitation = super().create(validated_data)
         self.context['raw_invitation_token'] = raw_token
         return invitation
-
 

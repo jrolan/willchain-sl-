@@ -16,6 +16,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.audit.models import AuditEvent
+from apps.wills.models import Will
 from .services import verify_google_id_token
 from .models import Invitation, User
 from .permissions import IsOwner, IsTestator
@@ -553,6 +554,7 @@ class AuthenticationApiTests(APITestCase):
 
 	def test_testator_can_invite_witness(self):
 		testator = self.active_user()
+		will = Will.objects.create(owner=testator, title='Invitation Will', content={})
 		login_response = self.client.post(
 			reverse('accounts:login'),
 			{'email': 'owner@example.com', 'password': 'Strong-password-123!'},
@@ -569,12 +571,15 @@ class AuthenticationApiTests(APITestCase):
 				'last_name': 'Witness',
 				'role': Invitation.RoleChoices.WITNESS,
 				'message': 'Please witness my digital will.',
+				'will': will.pk,
 			},
 			format='json',
 		)
 		self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 		self.assertEqual(response.data['data']['email'], 'witness@example.com')
 		self.assertEqual(response.data['data']['role'], 'WITNESS')
+		self.assertEqual(response.data['data']['will'], will.pk)
+		self.assertEqual(response.data['data']['will_title'], will.title)
 		self.assertNotIn('token', response.data['data'])
 
 		invitation = Invitation.objects.get(email='witness@example.com')
@@ -587,7 +592,8 @@ class AuthenticationApiTests(APITestCase):
 		self.assertTrue(AuditEvent.objects.filter(event_type=AuditEvent.EventType.INVITATION_SENT).exists())
 
 	def test_testator_can_invite_lawyer_but_uses_dedicated_beneficiary_flow(self):
-		self.active_user()
+		testator = self.active_user()
+		will = Will.objects.create(owner=testator, title='Legal Review Will', content={})
 		login_response = self.client.post(
 			reverse('accounts:login'),
 			{'email': 'owner@example.com', 'password': 'Strong-password-123!'},
@@ -598,7 +604,7 @@ class AuthenticationApiTests(APITestCase):
 		# Invite Lawyer
 		resp1 = self.client.post(
 			reverse('accounts:invitations'),
-			{'email': 'lawyer@example.com', 'role': Invitation.RoleChoices.LAWYER_VERIFIER},
+			{'email': 'lawyer@example.com', 'role': Invitation.RoleChoices.LAWYER_VERIFIER, 'will': will.pk},
 			format='json',
 		)
 		self.assertEqual(resp1.status_code, status.HTTP_201_CREATED)
@@ -611,6 +617,38 @@ class AuthenticationApiTests(APITestCase):
 		)
 		self.assertEqual(resp2.status_code, status.HTTP_400_BAD_REQUEST)
 		self.assertFalse(Invitation.objects.filter(email='beneficiary@example.com').exists())
+
+	def test_collaborator_lists_only_accepted_will_scoped_invitations(self):
+		owner = self.active_user(email='collaboration-owner@example.com')
+		other_owner = self.active_user(email='other-collaboration-owner@example.com')
+		collaborator = self.active_user(email='collaborator@example.com', role=User.Role.OWNER)
+		will = Will.objects.create(owner=owner, title='Scoped Will', content={})
+		other_will = Will.objects.create(owner=other_owner, title='Other Will', content={})
+		Invitation.objects.create(
+			inviter=owner,
+			accepted_user=collaborator,
+			will=will,
+			email=collaborator.email,
+			role=Invitation.RoleChoices.LAWYER_VERIFIER,
+			status=Invitation.Status.ACCEPTED,
+			accepted_at=timezone.now(),
+		)
+		Invitation.objects.create(
+			inviter=other_owner,
+			accepted_user=collaborator,
+			will=other_will,
+			email=collaborator.email,
+			role=Invitation.RoleChoices.WITNESS,
+			status=Invitation.Status.PENDING,
+		)
+		self.client.force_authenticate(collaborator)
+
+		response = self.client.get(reverse('accounts:my-collaborations'))
+
+		self.assertEqual(response.status_code, status.HTTP_200_OK)
+		self.assertEqual(len(response.data['data']), 1)
+		self.assertEqual(response.data['data'][0]['will'], will.pk)
+		self.assertEqual(response.data['data'][0]['role'], Invitation.RoleChoices.LAWYER_VERIFIER)
 
 	def test_invitee_must_verify_and_sign_in_before_accepting_invitation(self):
 		testator = self.active_user()

@@ -294,7 +294,7 @@ class InvitationListView(generics.ListCreateAPIView):
 	permission_classes = (IsActiveAccount, IsTestator)
 
 	def get_queryset(self):
-		return Invitation.objects.filter(inviter=self.request.user).select_related('accepted_user')
+		return Invitation.objects.filter(inviter=self.request.user).select_related('accepted_user', 'will')
 
 	def list(self, request, *args, **kwargs):
 		queryset = self.get_queryset()
@@ -319,6 +319,22 @@ class InvitationListView(generics.ListCreateAPIView):
 			},
 			status=status.HTTP_201_CREATED,
 		)
+
+
+class MyCollaborationsView(generics.ListAPIView):
+	serializer_class = InvitationSerializer
+	permission_classes = (IsActiveAccount,)
+
+	def get_queryset(self):
+		return Invitation.objects.filter(
+			accepted_user=self.request.user,
+			status=Invitation.Status.ACCEPTED,
+			will__isnull=False,
+		).select_related('inviter', 'accepted_user', 'will')
+
+	def list(self, request, *args, **kwargs):
+		serializer = self.get_serializer(self.get_queryset(), many=True)
+		return Response({'data': serializer.data})
 
 
 class GoogleLoginView(APIView):
@@ -592,6 +608,7 @@ class AcceptInvitationView(APIView):
 			'role': invitation.role,
 			'role_display': invitation.get_role_display(),
 			'inviter_name': f'{invitation.inviter.first_name} {invitation.inviter.last_name}'.strip() or 'WillChain member',
+			'will_title': invitation.will.title if invitation.will_id else None,
 		}})
 
 	@transaction.atomic
@@ -622,7 +639,7 @@ class AcceptInvitationView(APIView):
 				target_user=user,
 				details={'invitation_id': invitation.pk, 'invited_role': invitation.role},
 			)
-			return Response({'data': UserSerializer(user).data, 'message': 'Invitation accepted. This does not grant access to a will.'})
+			return Response({'data': UserSerializer(user).data, 'message': 'Will-specific collaborator invitation accepted. Your workspace is available according to its role and verification permissions.'})
 
 		email = request.data.get('email')
 		if not isinstance(email, str) or email.strip().lower() != invitation.email.lower():

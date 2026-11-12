@@ -10,6 +10,7 @@ from .views import (
     InvitationListView,
     LoginView,
     LogoutView,
+    MyCollaborationsView,
     MeView,
     RefreshView,
     RegisterView,
@@ -33,5 +34,6 @@ urlpatterns = [
     path('reset-password/', ResetPasswordView.as_view(), name='reset-password'),
     path('verify-email/', VerifyEmailView.as_view(), name='verify-email'),
     path('invitations/', InvitationListView.as_view(), name='invitations'),
+    path('my-collaborations/', MyCollaborationsView.as_view(), name='my-collaborations'),
     path('invitations/accept/', AcceptInvitationView.as_view(), name='accept-invitation'),
 ]

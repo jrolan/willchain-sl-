@@ -44,6 +44,8 @@ export type InvitationStatus = "PENDING" | "ACCEPTED" | "EXPIRED" | "REVOKED";
 
 export interface Invitation {
   id: number;
+  will: number | null;
+  will_title: string | null;
   inviter_email: string;
   email: string;
   first_name: string;
@@ -63,4 +65,5 @@ export interface InvitationDetail {
   role: InvitationRole;
   role_display: string;
   inviter_name: string;
+  will_title: string | null;
 }

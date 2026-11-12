@@ -1,4 +1,23 @@
+import secrets
+
+from django.conf import settings
+from django.core.mail import send_mail
+
 from apps.audit.models import AuditEvent
+
+
+def generate_identity_verification_code():
+    return str(secrets.randbelow(900000) + 100000).zfill(6)
+
+
+def send_identity_verification_code(recipient_email, code):
+    send_mail(
+        'WillChain beneficiary identity check',
+        f'Your beneficiary verification code is {code}. This code expires in 10 minutes.',
+        settings.DEFAULT_FROM_EMAIL,
+        [recipient_email],
+        fail_silently=False,
+    )
 
 
 def record_beneficiary_audit(event_type, request=None, actor=None, target_user=None, details=None):

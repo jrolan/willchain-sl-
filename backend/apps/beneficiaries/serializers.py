@@ -36,6 +36,9 @@ class WillBeneficiarySerializer(serializers.ModelSerializer):
             'full_name',
             'relationship_type',
             'status',
+            'identity_verification_status',
+            'identity_verification_method',
+            'identity_verified_at',
             'accepted_at',
             'revoked_at',
             'created_at',
@@ -46,6 +49,9 @@ class WillBeneficiarySerializer(serializers.ModelSerializer):
             'will',
             'beneficiary_user',
             'beneficiary_user_email',
+            'identity_verification_status',
+            'identity_verification_method',
+            'identity_verified_at',
             'accepted_at',
             'revoked_at',
             'created_at',
@@ -247,12 +253,26 @@ class BeneficiarySelfRelationshipSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = WillBeneficiary
-        fields = ('id', 'recipient_email', 'full_name', 'relationship_type', 'status', 'accepted_at', 'created_at')
+        fields = (
+            'id',
+            'recipient_email',
+            'full_name',
+            'relationship_type',
+            'status',
+            'identity_verification_status',
+            'identity_verified_at',
+            'accepted_at',
+            'created_at',
+        )
         read_only_fields = fields
 
 
 class BeneficiaryReleaseTokenSerializer(serializers.Serializer):
     token = serializers.CharField(required=True, write_only=True, trim_whitespace=False)
+
+
+class BeneficiaryReleaseIdentityVerifySerializer(BeneficiaryReleaseTokenSerializer):
+    code = serializers.CharField(required=True, min_length=6, max_length=6, trim_whitespace=True)
 
 
 class BeneficiaryReleaseRegistrationSerializer(BeneficiaryReleaseTokenSerializer):

@@ -16,7 +16,7 @@ This folder contains the Django REST Framework backend.
 - `beneficiaries` — beneficiary relationships and allocation instructions.
 - `documents` — private document metadata and storage integration.
 - `verification` — post-death verification workflow and human decisions.
-- `integrity` — cryptographic-hash and blockchain-reference integration.
+- `integrity` — encrypted finalized snapshots, immutable commitments, and blockchain anchoring.
 - `ai_services` — interfaces to future OCR/AI assistance only.
 - `notifications` — authorised messages and delivery status.
 - `audit` — security and business-event audit records.
@@ -36,7 +36,7 @@ The current will-management API is available under `/api/v1/wills/` and requires
 
 Finalized wills cannot be edited, deleted, or finalized again. Ownership is enforced at the API object-permission layer, and create, access, update, finalization, and denied-access events are recorded in the audit log without storing private will content.
 
-Blockchain registration and AI analysis are intentionally excluded from Module 2 and belong to later modules.
+Blockchain anchoring is implemented by Module 6 and is intentionally kept out of the will lifecycle's synchronous finalization path. See [`../blockchain/README.md`](../blockchain/README.md) for deployment, configuration, verification, and local integration instructions.
 
 ## Google sign-in and beneficiary releases
 
@@ -61,3 +61,9 @@ Uploads accept PDF, JPEG, and PNG only, with a 10,000,000-byte (10 MB decimal) m
 Database updates and required audit records share a transaction. New files are staged before metadata changes and removed on ordinary transaction/audit failures. Filesystem and database transactions cannot be made atomic together, so rare process termination or cleanup I/O failure can leave an unreferenced file. Inspect candidates with `python manage.py reconcile_private_documents`; removal requires the explicit `--apply` option and files must be at least 24 hours old. The command never removes files referenced by document-version records. Soft-deleted and replaced files remain retained for history.
 
 Integrity checks store their outcomes separately from document metadata. A mismatch preserves the accepted SHA-256 checksum; it is not evidence of who changed a file or when.
+
+## Module 6: Blockchain integrity
+
+Finalizing a will creates an encrypted, immutable versioned snapshot and random-salted commitment in the integrity outbox. The worker anchors the commitment asynchronously, records transaction and confirmation evidence, and anchors active supporting documents only after their actual private-file bytes pass the existing SHA-256 integrity check. Blockchain unavailability does not roll back finalization.
+
+Owners can view and verify their own finalized-will and document commitments. Lawyers can view and verify evidence only for cases authorized by the existing assigned-lawyer permission; lawyer responses do not disclose document metadata. Administrators can monitor/retry operations without access to will content. There is no public identity lookup endpoint. A blockchain match indicates that data agrees with an anchored commitment; it is not a legal-validity or authorship determination.

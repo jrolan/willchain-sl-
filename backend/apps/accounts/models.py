@@ -79,6 +79,13 @@ class Invitation(models.Model):
 		blank=True,
 		related_name='accepted_invitations',
 	)
+	will = models.ForeignKey(
+		'wills.Will',
+		on_delete=models.CASCADE,
+		null=True,
+		blank=True,
+		related_name='collaborator_invitations',
+	)
 	email = models.EmailField(db_index=True)
 	first_name = models.CharField(max_length=150, blank=True)
 	last_name = models.CharField(max_length=150, blank=True)

@@ -130,6 +130,8 @@ class VerificationCaseSerializer(serializers.ModelSerializer):
     """
     will = serializers.PrimaryKeyRelatedField(read_only=True)
     assigned_lawyer_display = serializers.SerializerMethodField()
+    assigned_lawyer_id = serializers.IntegerField(read_only=True)
+    initiator_id = serializers.IntegerField(read_only=True)
     evidence = CaseEvidenceSerializer(many=True, read_only=True)
     status_history = CaseStatusHistorySerializer(many=True, read_only=True)
     disclosure_authorization = WillDisclosureAuthorizationSerializer(read_only=True)
@@ -140,6 +142,7 @@ class VerificationCaseSerializer(serializers.ModelSerializer):
         fields = (
             'id',
             'will',
+            'initiator_id',
             'case_type',
             'submission_type',
             'status',
@@ -147,6 +150,7 @@ class VerificationCaseSerializer(serializers.ModelSerializer):
             'decision_notes',
             'information_request_notes',
             'assigned_lawyer_display',
+            'assigned_lawyer_id',
             'evidence',
             'status_history',
             'disclosure_authorization',
@@ -244,6 +248,10 @@ class EligibilityAssessmentInputSerializer(serializers.Serializer):
 class LawyerAssignmentSerializer(serializers.Serializer):
     """Input serializer for assigning a lawyer to a case."""
     lawyer_id = serializers.IntegerField(required=True)
+
+
+class InvitedLawyerAssignmentSerializer(serializers.Serializer):
+    invitation_id = serializers.IntegerField(required=True)
 
 
 class Module8StatusSerializer(serializers.Serializer):

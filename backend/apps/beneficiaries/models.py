@@ -25,6 +25,11 @@ class WillBeneficiary(models.Model):
         DECLINED = 'DECLINED', 'Declined'
         REVOKED = 'REVOKED', 'Revoked'
 
+    class IdentityVerificationStatus(models.TextChoices):
+        PENDING = 'PENDING', 'Pending verification'
+        VERIFIED = 'VERIFIED', 'Verified'
+        REJECTED = 'REJECTED', 'Rejected'
+
     will = models.ForeignKey(
         Will,
         on_delete=models.CASCADE,
@@ -50,6 +55,17 @@ class WillBeneficiary(models.Model):
         default=Status.PENDING,
         db_index=True,
     )
+    identity_verification_status = models.CharField(
+        max_length=32,
+        choices=IdentityVerificationStatus.choices,
+        default=IdentityVerificationStatus.PENDING,
+        db_index=True,
+    )
+    identity_verification_method = models.CharField(max_length=32, default='EMAIL_OTP', blank=True)
+    identity_verification_requested_at = models.DateTimeField(null=True, blank=True)
+    identity_verification_expires_at = models.DateTimeField(null=True, blank=True)
+    identity_verification_code_hash = models.CharField(max_length=128, null=True, blank=True)
+    identity_verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     accepted_at = models.DateTimeField(null=True, blank=True)
@@ -74,6 +90,52 @@ class WillBeneficiary(models.Model):
             models.Index(fields=['beneficiary_user', 'status'], name='ben_user_status_idx'),
             models.Index(fields=['normalized_email', 'status'], name='ben_email_status_idx'),
         ]
+
+    @staticmethod
+    def generate_identity_verification_code():
+        return str(secrets.randbelow(900000) + 100000).zfill(6)
+
+    def begin_identity_verification(self):
+        code = self.generate_identity_verification_code()
+        now = timezone.now()
+        self.identity_verification_status = self.IdentityVerificationStatus.PENDING
+        self.identity_verification_method = 'EMAIL_OTP'
+        self.identity_verification_requested_at = now
+        self.identity_verification_expires_at = now + timedelta(minutes=10)
+        self.identity_verification_code_hash = hashlib.sha256(code.encode('utf-8')).hexdigest()
+        self.identity_verified_at = None
+        self.save(update_fields=[
+            'identity_verification_status',
+            'identity_verification_method',
+            'identity_verification_requested_at',
+            'identity_verification_expires_at',
+            'identity_verification_code_hash',
+            'identity_verified_at',
+            'updated_at',
+        ])
+        return code
+
+    def verify_identity_code(self, code):
+        if not code or not self.identity_verification_code_hash:
+            return False
+        if self.identity_verification_expires_at is not None and self.identity_verification_expires_at <= timezone.now():
+            return False
+        expected_hash = hashlib.sha256(str(code).strip().encode('utf-8')).hexdigest()
+        is_valid = hmac.compare_digest(self.identity_verification_code_hash, expected_hash)
+        if not is_valid:
+            return False
+        self.identity_verification_status = self.IdentityVerificationStatus.VERIFIED
+        self.identity_verification_expires_at = None
+        self.identity_verification_code_hash = None
+        self.identity_verified_at = timezone.now()
+        self.save(update_fields=[
+            'identity_verification_status',
+            'identity_verification_expires_at',
+            'identity_verification_code_hash',
+            'identity_verified_at',
+            'updated_at',
+        ])
+        return True
 
     def revoke(self):
         if self.status == self.Status.REVOKED:

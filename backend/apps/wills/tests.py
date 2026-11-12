@@ -3,10 +3,10 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.accounts.models import User
+from apps.accounts.models import Invitation, User
 from apps.audit.models import AuditEvent
 from apps.verification.models import VerificationCase, WillDisclosureAuthorization
-from .models import Will
+from .models import Will, WitnessAttestation
 
 
 class WillManagementApiTests(APITestCase):
@@ -603,3 +603,98 @@ class WillManagementApiTests(APITestCase):
             details_str = str(event.details)
             self.assertNotIn('Offshore vault', details_str)
             self.assertNotIn('secret_assets', details_str)
+
+    def test_invited_witness_can_record_version_bound_attestation_without_will_access(self):
+        owner = self.active_user(email='witness-owner@example.com')
+        witness = self.active_user(email='scoped-witness@example.com')
+        will = Will.objects.create(owner=owner, title='Signing Will', content={'body': 'private contents'})
+        will.finalize()
+        invitation = Invitation.objects.create(
+            inviter=owner,
+            accepted_user=witness,
+            will=will,
+            email=witness.email,
+            role=Invitation.RoleChoices.WITNESS,
+            status=Invitation.Status.ACCEPTED,
+        )
+        headers = self.auth_headers(witness)
+
+        assignments = self.client.get(reverse('wills:my-witness-assignments'), **headers)
+
+        self.assertEqual(assignments.status_code, status.HTTP_200_OK)
+        self.assertEqual(assignments.data['data'][0]['will_title'], will.title)
+        self.assertNotIn('content', assignments.data['data'][0])
+        response = self.client.post(
+            reverse('wills:witness-attestation', args=[invitation.pk]),
+            {'decision': WitnessAttestation.Status.ATTESTED, 'witnessed_signing': True},
+            format='json',
+            **headers,
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        attestation = WitnessAttestation.objects.get(invitation=invitation)
+        self.assertEqual(attestation.witness, witness)
+        self.assertEqual(attestation.will_version, will.version)
+        self.assertEqual(attestation.will_content_hash, WitnessAttestation.hash_will_content(will.content))
+        self.assertEqual(
+            self.client.post(
+                reverse('wills:witness-attestation', args=[invitation.pk]),
+                {'decision': WitnessAttestation.Status.DECLINED},
+                format='json',
+                **headers,
+            ).status_code,
+            status.HTTP_409_CONFLICT,
+        )
+
+    def test_witness_cannot_attest_before_finalization_or_for_another_account(self):
+        owner = self.active_user(email='draft-witness-owner@example.com')
+        witness = self.active_user(email='draft-witness@example.com')
+        other_user = self.active_user(email='other-witness@example.com')
+        will = Will.objects.create(owner=owner, title='Draft Signing Will', content={})
+        invitation = Invitation.objects.create(
+            inviter=owner,
+            accepted_user=witness,
+            will=will,
+            email=witness.email,
+            role=Invitation.RoleChoices.WITNESS,
+            status=Invitation.Status.ACCEPTED,
+        )
+        response = self.client.post(
+            reverse('wills:witness-attestation', args=[invitation.pk]),
+            {'decision': WitnessAttestation.Status.ATTESTED, 'witnessed_signing': True},
+            format='json',
+            **self.auth_headers(witness),
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        will.finalize()
+        wrong_user_response = self.client.post(
+            reverse('wills:witness-attestation', args=[invitation.pk]),
+            {'decision': WitnessAttestation.Status.ATTESTED, 'witnessed_signing': True},
+            format='json',
+            **self.auth_headers(other_user),
+        )
+        self.assertEqual(wrong_user_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_witness_attestation_requires_explicit_observation_confirmation(self):
+        owner = self.active_user(email='confirmation-owner@example.com')
+        witness = self.active_user(email='confirmation-witness@example.com')
+        will = Will.objects.create(owner=owner, title='Confirmation Will', content={})
+        will.finalize()
+        invitation = Invitation.objects.create(
+            inviter=owner,
+            accepted_user=witness,
+            will=will,
+            email=witness.email,
+            role=Invitation.RoleChoices.WITNESS,
+            status=Invitation.Status.ACCEPTED,
+        )
+
+        response = self.client.post(
+            reverse('wills:witness-attestation', args=[invitation.pk]),
+            {'decision': WitnessAttestation.Status.ATTESTED, 'witnessed_signing': False},
+            format='json',
+            **self.auth_headers(witness),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(WitnessAttestation.objects.filter(invitation=invitation).exists())

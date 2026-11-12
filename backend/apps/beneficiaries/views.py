@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.shortcuts import get_object_or_404
@@ -17,13 +19,14 @@ from apps.audit.models import AuditEvent
 from apps.verification.models import BeneficiaryRelease, VerificationCase
 from apps.wills.models import Will
 from .models import BeneficiaryAllocation, BeneficiaryInvitation, WillBeneficiary
-from .services import record_beneficiary_audit
+from .services import generate_identity_verification_code, record_beneficiary_audit, send_identity_verification_code
 from .serializers import (
     AcceptInvitationSerializer,
     BeneficiaryAllocationAccessSerializer,
     BeneficiaryAllocationSerializer,
     BeneficiaryInvitationSerializer,
     BeneficiaryInvitationPreviewSerializer,
+    BeneficiaryReleaseIdentityVerifySerializer,
     BeneficiaryReleaseRegistrationSerializer,
     BeneficiaryReleaseTokenSerializer,
     CreateWillBeneficiarySerializer,
@@ -566,6 +569,78 @@ class BeneficiaryReleaseValidateTokenAPIView(generics.GenericAPIView):
         return Response({'data': {'valid': True, 'beneficiary_email': mask_email(release.allocation.beneficiary.normalized_email)}})
 
 
+class BeneficiaryReleaseVerifyIdentityAPIView(generics.GenericAPIView):
+    permission_classes = (IsAuthenticated, IsActiveAccount)
+    serializer_class = BeneficiaryReleaseIdentityVerifySerializer
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = 'beneficiary_claim'
+
+    @transaction.atomic
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        release = get_valid_beneficiary_release(serializer.validated_data['token'], lock=True)
+        user = request.user
+        if (
+            not release
+            or user.account_status != User.AccountStatus.ACTIVE
+            or not user.email_verified
+            or release.allocation.beneficiary.normalized_email.lower() != user.email.lower()
+        ):
+            record_beneficiary_audit(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                actor=user,
+                details={'event': 'beneficiary_identity_verification_rejected'},
+            )
+            return Response(
+                {'error': {'code': 'INVALID_RELEASE_CLAIM', 'message': 'The release link is invalid, expired, or not assigned to this account.'}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        relationship = WillBeneficiary.objects.select_for_update().get(pk=release.allocation.beneficiary_id)
+        if relationship.identity_verification_status == WillBeneficiary.IdentityVerificationStatus.VERIFIED:
+            return Response({'data': {'verified': True}, 'message': 'Beneficiary identity already verified.'})
+
+        if (
+            not relationship.identity_verification_code_hash
+            or relationship.identity_verification_expires_at is None
+            or relationship.identity_verification_expires_at <= timezone.now()
+        ):
+            code = relationship.begin_identity_verification()
+            send_identity_verification_code(relationship.normalized_email, code)
+            record_beneficiary_audit(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                actor=user,
+                details={'event': 'beneficiary_identity_challenge_sent', 'relationship_id': relationship.pk, 'release_id': release.pk},
+            )
+            return Response(
+                {'error': {'code': 'IDENTITY_VERIFICATION_REQUIRED', 'message': 'A verification code has been sent to your email. Enter it to continue.'}},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not relationship.verify_identity_code(serializer.validated_data['code']):
+            record_beneficiary_audit(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                actor=user,
+                details={'event': 'beneficiary_identity_verification_failed', 'relationship_id': relationship.pk, 'release_id': release.pk},
+            )
+            return Response(
+                {'error': {'code': 'INVALID_IDENTITY_CODE', 'message': 'The verification code is incorrect or has expired.'}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        record_beneficiary_audit(
+            AuditEvent.EventType.SECURITY_ALERT,
+            request=request,
+            actor=user,
+            details={'event': 'beneficiary_identity_verified', 'relationship_id': relationship.pk, 'release_id': release.pk},
+        )
+        return Response({'data': {'verified': True}, 'message': 'Beneficiary identity verified successfully.'})
+
+
 class BeneficiaryReleaseRegistrationAPIView(generics.GenericAPIView):
     permission_classes = ()
     serializer_class = BeneficiaryReleaseRegistrationSerializer
@@ -662,6 +737,20 @@ class BeneficiaryReleaseClaimAPIView(generics.GenericAPIView):
             return Response(
                 {'error': {'code': 'INVALID_RELEASE_CLAIM', 'message': 'The release link is invalid, expired, or not assigned to this account.'}},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if relationship.identity_verification_status != WillBeneficiary.IdentityVerificationStatus.VERIFIED:
+            code = relationship.begin_identity_verification()
+            send_identity_verification_code(relationship.normalized_email, code)
+            record_beneficiary_audit(
+                AuditEvent.EventType.SECURITY_ALERT,
+                request=request,
+                actor=user,
+                details={'event': 'beneficiary_release_claim_identity_required', 'relationship_id': relationship.pk, 'release_id': release.pk},
+            )
+            return Response(
+                {'error': {'code': 'IDENTITY_VERIFICATION_REQUIRED', 'message': 'A 6-digit verification code has been sent to your email. Verify your identity before claiming the release.'}},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         relationship.beneficiary_user = user

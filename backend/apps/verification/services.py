@@ -33,7 +33,7 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from apps.accounts.models import User
+from apps.accounts.models import Invitation, User
 from apps.accounts.services import log_audit_event
 from apps.audit.models import AuditEvent
 from apps.beneficiaries.models import BeneficiaryAllocation, WillBeneficiary
@@ -41,6 +41,7 @@ from apps.documents.storage import private_document_storage
 from apps.documents.validation import validate_upload
 from apps.wills.models import Will
 
+from .permissions import is_assigned_lawyer
 from .models import (
     CaseEvidence,
     CaseStatusHistory,
@@ -365,6 +366,50 @@ def assign_lawyer(case, lawyer, actor, request=None):
     return case
 
 
+def assign_invited_lawyer(case, invitation, actor, request=None):
+    if case.initiator_id != actor.pk or case.will_id is None or case.will.owner_id != actor.pk:
+        raise PermissionDenied('Only the will owner who initiated this case can assign an invited reviewer.')
+    if (
+        invitation.inviter_id != actor.pk
+        or invitation.will_id != case.will_id
+        or invitation.role != Invitation.RoleChoices.LAWYER_VERIFIER
+        or invitation.status != Invitation.Status.ACCEPTED
+        or invitation.accepted_user_id is None
+    ):
+        raise ValidationError({'invitation_id': 'Choose an accepted legal verifier invitation for this will.'})
+    lawyer = invitation.accepted_user
+    if lawyer.account_status != User.AccountStatus.ACTIVE or not lawyer.email_verified:
+        raise ValidationError({'invitation_id': 'The invited lawyer account must be active and email-verified.'})
+    if case.status not in {
+        VerificationCase.Status.OPEN,
+        VerificationCase.Status.INFORMATION_REQUIRED,
+        VerificationCase.Status.UNDER_REVIEW,
+        VerificationCase.Status.APPROVED,
+    }:
+        raise ValidationError('A legal verifier can be assigned only to an active or approved case.')
+    if case.assigned_lawyer_id not in (None, lawyer.pk):
+        raise ValidationError('A different legal verifier is already assigned to this case.')
+
+    case.assigned_lawyer = lawyer
+    case.assigned_at = timezone.now()
+    case.save(update_fields=['assigned_lawyer', 'assigned_at', 'updated_at'])
+    CaseStatusHistory.objects.create(
+        case=case,
+        from_status=case.status,
+        to_status=case.status,
+        actor=actor,
+        notes=f'Will owner assigned invited legal verifier: {lawyer.first_name} {lawyer.last_name}'.strip(),
+    )
+    log_audit_event(
+        AuditEvent.EventType.VERIFICATION_CASE_ASSIGNED,
+        request=request,
+        actor=actor,
+        target_user=lawyer,
+        details={'case_id': case.pk, 'lawyer_id': lawyer.pk, 'invitation_id': invitation.pk, 'assignment_source': 'owner_invitation'},
+    )
+    return case
+
+
 def assess_eligibility(case, lawyer, is_eligible, notes='', request=None):
     """
     Lawyer reviews executor authority claim for a CLAIMED_EXECUTOR case in PENDING_ELIGIBILITY.
@@ -675,7 +720,7 @@ def revoke_will_disclosure(case, actor, request=None):
 
 @transaction.atomic
 def review_beneficiary_allocation(case, allocation, actor, review_status, request=None):
-    if actor != case.assigned_lawyer or actor.role != User.Role.LAWYER_VERIFIER:
+    if not is_assigned_lawyer(case, actor):
         raise PermissionDenied('Only the assigned lawyer can review allocations for this case.')
     if (
         case.case_type != VerificationCase.CaseType.POST_DEATH_VERIFY
@@ -716,9 +761,7 @@ def review_beneficiary_allocation(case, allocation, actor, review_status, reques
 
 
 def get_case_beneficiary_allocations(case, actor):
-    if (
-        actor != case.assigned_lawyer and actor.role != User.Role.ADMINISTRATOR
-    ) or (actor == case.assigned_lawyer and actor.role != User.Role.LAWYER_VERIFIER):
+    if actor.role != User.Role.ADMINISTRATOR and not is_assigned_lawyer(case, actor):
         raise PermissionDenied('Only the assigned lawyer or an administrator can view allocations for this case.')
     if (
         case.case_type != VerificationCase.CaseType.POST_DEATH_VERIFY
@@ -742,8 +785,7 @@ def get_case_beneficiary_allocations(case, actor):
 @transaction.atomic
 def authorize_beneficiary_releases(case, allocation_ids, actor, request=None):
     if (
-        actor != case.assigned_lawyer
-        or actor.role != User.Role.LAWYER_VERIFIER
+        not is_assigned_lawyer(case, actor)
         or actor.account_status != User.AccountStatus.ACTIVE
     ):
         raise PermissionDenied('Only the active lawyer assigned to this case can authorize beneficiary releases.')
@@ -752,8 +794,7 @@ def authorize_beneficiary_releases(case, allocation_ids, actor, request=None):
         or case.status != VerificationCase.Status.APPROVED
         or case.will_id is None
         or case.assigned_lawyer is None
-        or case.assigned_lawyer.role != User.Role.LAWYER_VERIFIER
-        or case.assigned_lawyer.account_status != User.AccountStatus.ACTIVE
+        or not is_assigned_lawyer(case, case.assigned_lawyer)
     ):
         raise ValidationError('Releases require an approved post-death verification case linked to a will.')
     if not allocation_ids or len(allocation_ids) != len(set(allocation_ids)):

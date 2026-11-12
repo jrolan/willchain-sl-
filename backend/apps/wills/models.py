@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -51,3 +54,37 @@ class Will(models.Model):
         self.finalized_at = timezone.now()
         self.version += 1
         self.save(update_fields=['status', 'finalized_at', 'version', 'updated_at'])
+
+
+class WitnessAttestation(models.Model):
+    class Status(models.TextChoices):
+        ATTESTED = 'ATTESTED', 'Attested'
+        DECLINED = 'DECLINED', 'Declined'
+
+    invitation = models.OneToOneField(
+        'accounts.Invitation',
+        on_delete=models.PROTECT,
+        related_name='witness_attestation',
+    )
+    will = models.ForeignKey(
+        Will,
+        on_delete=models.PROTECT,
+        related_name='witness_attestations',
+    )
+    witness = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='witness_attestations',
+    )
+    status = models.CharField(max_length=16, choices=Status.choices)
+    will_version = models.PositiveIntegerField()
+    will_content_hash = models.CharField(max_length=64)
+    responded_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ('-responded_at',)
+
+    @staticmethod
+    def hash_will_content(content):
+        canonical_content = json.dumps(content, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+        return hashlib.sha256(canonical_content.encode('utf-8')).hexdigest()

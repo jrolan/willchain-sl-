@@ -583,6 +583,10 @@ class BeneficiaryModuleTests(APITestCase):
         self.assertEqual(user.account_status, User.AccountStatus.PENDING_VERIFICATION)
         self.assertFalse(user.email_verified)
 
+        user.account_status = User.AccountStatus.ACTIVE
+        user.email_verified = True
+        user.save(update_fields=['account_status', 'email_verified', 'updated_at'])
+
         self.client.force_authenticate(user)
         before_verification = self.client.post(
             reverse('beneficiaries:beneficiary-release-claim'),
@@ -591,10 +595,15 @@ class BeneficiaryModuleTests(APITestCase):
         )
         self.assertEqual(before_verification.status_code, status.HTTP_403_FORBIDDEN)
 
-        user.account_status = User.AccountStatus.ACTIVE
-        user.email_verified = True
-        user.save(update_fields=['account_status', 'email_verified', 'updated_at'])
-        self.client.force_authenticate(user)
+        relationship.refresh_from_db()
+        identity_code = relationship.begin_identity_verification()
+        verify_response = self.client.post(
+            reverse('beneficiaries:beneficiary-release-verify-identity'),
+            {'token': raw_token, 'code': identity_code},
+            format='json',
+        )
+        self.assertEqual(verify_response.status_code, status.HTTP_200_OK)
+
         claim_response = self.client.post(
             reverse('beneficiaries:beneficiary-release-claim'),
             {'token': raw_token},

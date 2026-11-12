@@ -3,16 +3,25 @@ from django.db.models import Q
 
 from apps.audit.models import AuditEvent
 from apps.accounts.services import log_audit_event
-from apps.accounts.models import User
+from apps.accounts.models import Invitation, User
+
+
+def is_assigned_lawyer(case, user):
+    if case.assigned_lawyer_id != user.pk or user.account_status != User.AccountStatus.ACTIVE:
+        return False
+    return user.role == User.Role.LAWYER_VERIFIER or Invitation.objects.filter(
+        accepted_user=user,
+        will_id=case.will_id,
+        role=Invitation.RoleChoices.LAWYER_VERIFIER,
+        status=Invitation.Status.ACCEPTED,
+    ).exists()
 
 
 def lawyer_case_scope_is_authorized(case, user):
     from .models import VerificationCase
 
     if (
-        case.assigned_lawyer_id != user.pk
-        or user.role != User.Role.LAWYER_VERIFIER
-        or user.account_status != User.AccountStatus.ACTIVE
+        not is_assigned_lawyer(case, user)
         or case.status not in {
             VerificationCase.Status.OPEN,
             VerificationCase.Status.INFORMATION_REQUIRED,
@@ -50,9 +59,7 @@ class IsAssignedLawyer(BasePermission):
 
     def has_object_permission(self, request, view, obj):
         allowed = (
-            obj.assigned_lawyer == request.user
-            and request.user.role == User.Role.LAWYER_VERIFIER
-            and request.user.account_status == User.AccountStatus.ACTIVE
+            is_assigned_lawyer(obj, request.user)
         )
         if not allowed:
             log_audit_event(
@@ -66,15 +73,13 @@ class IsAssignedLawyer(BasePermission):
 
 class IsAssignedLawyerOrAdministrator(BasePermission):
     def has_object_permission(self, request, view, obj):
-        return obj.assigned_lawyer == request.user or request.user.role == User.Role.ADMINISTRATOR
+        return is_assigned_lawyer(obj, request.user) or request.user.role == User.Role.ADMINISTRATOR
 
 
 class IsAssignedLawyerForRelease(BasePermission):
     def has_object_permission(self, request, view, obj):
         allowed = (
-            request.user == obj.assigned_lawyer
-            and request.user.role == User.Role.LAWYER_VERIFIER
-            and request.user.account_status == User.AccountStatus.ACTIVE
+            is_assigned_lawyer(obj, request.user)
         )
         if not allowed:
             log_audit_event(
@@ -92,8 +97,7 @@ class CanRetryReleaseNotification(BasePermission):
         allowed = (
             user.role == User.Role.ADMINISTRATOR
             or (
-                user.role == User.Role.LAWYER_VERIFIER
-                and obj.case.assigned_lawyer_id == user.pk
+                is_assigned_lawyer(obj.case, user)
             )
         )
         if not allowed:
@@ -116,7 +120,7 @@ class CanViewCase(BasePermission):
         u = request.user
         allowed = (
             u == obj.initiator
-            or u == obj.assigned_lawyer
+            or is_assigned_lawyer(obj, u)
             or u.role == User.Role.ADMINISTRATOR
         )
         if not allowed:
@@ -136,7 +140,6 @@ class IsAssignedLawyerOnAuthorizedCase(BasePermission):
         if not (
             request.user
             and request.user.is_authenticated
-            and request.user.role == User.Role.LAWYER_VERIFIER
             and request.user.account_status == User.AccountStatus.ACTIVE
         ):
             return False
@@ -148,7 +151,7 @@ class IsAssignedLawyerOnAuthorizedCase(BasePermission):
             from .models import VerificationCase
             case_model = VerificationCase
         from .models import VerificationCase
-        has_authorized_case = case_model.objects.filter(
+        assigned_cases = case_model.objects.filter(
             will_id=will_pk,
             assigned_lawyer=request.user,
             status__in=[
@@ -157,7 +160,16 @@ class IsAssignedLawyerOnAuthorizedCase(BasePermission):
                 VerificationCase.Status.APPROVED,
                 VerificationCase.Status.INFORMATION_REQUIRED,
             ],
-        ).filter(
+        )
+        if request.user.role != User.Role.LAWYER_VERIFIER:
+            assigned_cases = assigned_cases.filter(
+                # Scoped reviewer invitations grant case access without changing
+                # the user's global account role.
+                will__collaborator_invitations__accepted_user=request.user,
+                will__collaborator_invitations__status=Invitation.Status.ACCEPTED,
+                will__collaborator_invitations__role=Invitation.RoleChoices.LAWYER_VERIFIER,
+            )
+        has_authorized_case = assigned_cases.filter(
             Q(case_type=VerificationCase.CaseType.POST_DEATH_VERIFY)
             | Q(
                 case_type=VerificationCase.CaseType.PRE_DEATH_REVIEW,
@@ -172,4 +184,3 @@ class IsAssignedLawyerOnAuthorizedCase(BasePermission):
                 details={'will_id': will_pk, 'operation': 'LAWYER_READ'},
             )
         return has_authorized_case
-

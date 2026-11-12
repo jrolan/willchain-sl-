@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Will
+from .models import Will, WitnessAttestation
 
 
 class WillSerializer(serializers.ModelSerializer):
@@ -113,3 +113,26 @@ class LawyerWillReadOnlySerializer(serializers.ModelSerializer):
         model = Will
         fields = ('title', 'content', 'status', 'version', 'finalized_at')
         read_only_fields = fields
+
+
+class WitnessAssignmentSerializer(serializers.Serializer):
+    invitation_id = serializers.IntegerField()
+    will_id = serializers.IntegerField()
+    will_title = serializers.CharField()
+    will_status = serializers.CharField()
+    will_version = serializers.IntegerField()
+    attestation_status = serializers.CharField()
+    responded_at = serializers.DateTimeField(allow_null=True)
+    attested_version = serializers.IntegerField(allow_null=True)
+
+
+class WitnessAttestationInputSerializer(serializers.Serializer):
+    decision = serializers.ChoiceField(choices=WitnessAttestation.Status.choices)
+    witnessed_signing = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        if attrs['decision'] == WitnessAttestation.Status.ATTESTED and not attrs['witnessed_signing']:
+            raise serializers.ValidationError({
+                'witnessed_signing': 'Confirm only if you personally observed the will owner sign this finalized version.'
+            })
+        return attrs

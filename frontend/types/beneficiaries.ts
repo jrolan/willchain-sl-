@@ -31,6 +31,8 @@ export interface BeneficiarySelfRelationship {
   full_name: string;
   relationship_type: string;
   status: "ACTIVE";
+  identity_verification_status: "PENDING" | "VERIFIED" | "REJECTED";
+  identity_verified_at: string | null;
   accepted_at: string | null;
   created_at: string;
 }

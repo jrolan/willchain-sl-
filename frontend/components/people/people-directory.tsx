@@ -48,6 +48,7 @@ function RoleInvitationCard({ invitation }: { invitation: Invitation }) {
     {expanded && <div className="dashboard-person-details">
       <p><strong>Connection:</strong> {role}</p>
       <p><strong>Invitation:</strong> {invitation.status} · Sent {new Date(invitation.created_at).toLocaleDateString()}</p>
+      {invitation.will_title && <p><strong>Will:</strong> {invitation.will_title}</p>}
       {invitation.message && <p><strong>Message:</strong> {invitation.message}</p>}
       {invitation.accepted_user_profile && <p><strong>Account:</strong> Invitation accepted</p>}
     </div>}

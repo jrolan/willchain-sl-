@@ -28,8 +28,29 @@ services:
       - willchain_private_documents:/app/private_documents
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8000), 2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     depends_on:
       db:
+        condition: service_healthy
+
+  integrity-worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      POSTGRES_HOST: db
+    command: python manage.py process_integrity_anchors --loop
+    volumes:
+      - ./backend:/app
+      - willchain_private_documents:/app/private_documents
+    depends_on:
+      backend:
         condition: service_healthy
 
   frontend:

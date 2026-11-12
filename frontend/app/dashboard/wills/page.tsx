@@ -12,6 +12,7 @@ import { useAuth } from "@/lib/auth-context";
 import { buildWillDocumentHtml, buildWillDocumentText } from "@/lib/will-export.mjs";
 import { WillBeneficiaryManager } from "@/components/beneficiaries/will-beneficiary-manager";
 import { WillDocumentManager } from "@/components/documents/will-document-manager";
+import { WillIntegrityPanel } from "@/components/integrity/will-integrity-panel";
 import { checkWillDocumentIntegrity, uploadWillDocument } from "@/services/document-service";
 import { createWill, finalizeWill, getProfile, getWills, sendInvitation, updateWill } from "@/services/auth-service";
 import { DOCUMENT_MAX_BYTES, validateDocumentFile } from "@/lib/document-rules.mjs";
@@ -187,7 +188,7 @@ export default function WillsWorkspacePage() {
     if (selectedWillId !== null) {
       const selectedWill = wills.find((will) => will.id === selectedWillId);
       if (selectedWill && selectedWill.status !== "DRAFT") {
-        throw new Error("Choose or create a draft before uploading documents.");
+        throw new Error("Choose or create an editable draft before continuing.");
       }
       return selectedWillId;
     }
@@ -323,12 +324,14 @@ export default function WillsWorkspacePage() {
     setError("");
     setMessage("");
     try {
+      const willId = await ensureEditableWillId();
       await sendInvitation({
         email: collaboratorEmail.trim(),
         first_name: collaboratorFirstName.trim(),
         last_name: collaboratorLastName.trim(),
         role: collaboratorRole,
         message: collaboratorMessage.trim(),
+        will: willId,
       });
       setCollaboratorEmail("");
       setCollaboratorFirstName("");
@@ -358,6 +361,9 @@ export default function WillsWorkspacePage() {
   ];
   const progressEntered = draftProgress.reduce((total, item) => total + item.value, 0);
   const progressAvailable = draftProgress.reduce((total, item) => total + item.total, 0);
+  const selectedWill = selectedWillId !== null
+    ? wills.find((will) => will.id === selectedWillId) ?? null
+    : null;
 
   if (initialLoading || loading) return <main className="min-h-screen p-10 text-[#60776e]">Loading your private will workspace...</main>;
 
@@ -382,6 +388,17 @@ export default function WillsWorkspacePage() {
           </nav>
           <span className={`will-sync-status ${selectedWillId ? "saved" : "unsaved"}`}><span />{selectedWillId ? "Draft saved" : "Unsaved draft"}</span>
         </div>
+
+        {selectedWillId !== null && (
+          <div className="mt-5">
+            <WillIntegrityPanel
+              key={`${selectedWillId}-${selectedWill?.status ?? "DRAFT"}`}
+              willId={selectedWillId}
+              mode="owner"
+              refreshKey={selectedWill?.status ?? "DRAFT"}
+            />
+          </div>
+        )}
 
         {draftSource !== "upload" && <nav className="will-stepper" aria-label="Will draft sections">
           {steps.map((label, index) => (
@@ -490,7 +507,7 @@ export default function WillsWorkspacePage() {
               </div>}
 
               {uploadStep === 4 && <div className="will-intake-stage">
-                <div><h4>Witness verification</h4><p>Invite a witness or legal verifier. Sending an invitation does not complete attestation, notarization, or link the invite to a specific will.</p></div>
+                <div><h4>Witness verification</h4><p>Invite a witness or legal verifier for this will. An invitation does not grant access to private will contents or complete witness attestation, notarization, or legal review.</p></div>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="text-sm font-semibold text-[#183252]">Collaborator role<select value={collaboratorRole} onChange={(event) => setCollaboratorRole(event.target.value as InvitationRole)}><option value="WITNESS">Witness</option><option value="LAWYER_VERIFIER">Lawyer / Legal verifier</option></select></label>
                   <Field label="Email address" value={collaboratorEmail} onChange={setCollaboratorEmail} type="email" />

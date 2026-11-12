@@ -7,7 +7,8 @@ import { CheckCircle2, LockKeyhole, ShieldCheck } from "lucide-react";
 
 import { AuthShell, Field } from "@/components/auth/auth-shell";
 import { useAuth } from "@/lib/auth-context";
-import { claimBeneficiaryRelease, registerBeneficiaryRelease, validateBeneficiaryReleaseToken } from "@/services/beneficiary-service";
+import { claimBeneficiaryRelease, registerBeneficiaryRelease, validateBeneficiaryReleaseToken, verifyBeneficiaryReleaseIdentity } from "@/services/beneficiary-service";
+import { ApiRequestError } from "@/services/auth-service";
 
 const TOKEN_STORAGE_KEY = "willchain_release_claim_token";
 
@@ -21,6 +22,8 @@ export default function BeneficiaryReleasePage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [showRegistration, setShowRegistration] = useState(false);
+  const [identityChallenge, setIdentityChallenge] = useState(false);
+  const [identityCode, setIdentityCode] = useState("");
   const [form, setForm] = useState({ email: "", first_name: "", last_name: "", password: "", password_confirmation: "" });
 
   useEffect(() => {
@@ -63,7 +66,29 @@ export default function BeneficiaryReleasePage() {
       await refreshUser();
       router.replace("/dashboard/beneficiary-allocations");
     } catch (requestError) {
+      if (requestError instanceof ApiRequestError && requestError.code === "IDENTITY_VERIFICATION_REQUIRED") {
+        setIdentityChallenge(true);
+        setMessage(requestError.message);
+        return;
+      }
       setError(requestError instanceof Error ? requestError.message : "Unable to claim this allocation.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleIdentityVerification(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await verifyBeneficiaryReleaseIdentity(token, identityCode);
+      await claimBeneficiaryRelease(token);
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      await refreshUser();
+      router.replace("/dashboard/beneficiary-allocations");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to verify your identity.");
     } finally {
       setBusy(false);
     }
@@ -93,15 +118,28 @@ export default function BeneficiaryReleasePage() {
       {error && <div role="alert" className="mb-5 border-l-4 border-rose-500 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>}
       {message && <div role="status" className="mb-5 flex items-start gap-2 border-l-4 border-emerald-600 bg-emerald-50 px-4 py-3 text-sm text-emerald-900"><CheckCircle2 size={17} className="mt-0.5 shrink-0" />{message}</div>}
 
-      {!validating && maskedEmail && !message && (
+      {!validating && maskedEmail && (!message || identityChallenge) && (
         <div className="space-y-5">
           {user ? (
             <>
-              <div className="flex items-start gap-3 border-y border-slate-200 py-4 text-sm text-slate-600">
-                <ShieldCheck size={18} className="mt-0.5 shrink-0 text-emerald-700" />
-                <p>Signed in as <strong>{user.email}</strong>. The server will confirm that this account matches the release.</p>
-              </div>
-              <button type="button" onClick={handleClaim} disabled={busy} className="h-12 w-full bg-emerald-800 px-5 text-sm font-bold text-white hover:bg-emerald-900 disabled:opacity-60">{busy ? "Claiming..." : "Claim authorized allocation"}</button>
+              {identityChallenge ? (
+                <form onSubmit={handleIdentityVerification} className="space-y-4">
+                  <p className="flex items-start gap-3 border-y border-slate-200 py-4 text-sm text-slate-600">
+                    <ShieldCheck size={18} className="mt-0.5 shrink-0 text-emerald-700" />
+                    <span>Enter the six-digit code sent to the beneficiary email address. It expires in 10 minutes.</span>
+                  </p>
+                  <Field label="Email verification code" required inputMode="numeric" autoComplete="one-time-code" value={identityCode} onChange={(event) => setIdentityCode(event.target.value.replace(/\D/g, "").slice(0, 6))} />
+                  <button type="submit" disabled={busy || identityCode.length !== 6} className="h-12 w-full bg-emerald-800 px-5 text-sm font-bold text-white hover:bg-emerald-900 disabled:opacity-60">{busy ? "Verifying..." : "Verify code and claim allocation"}</button>
+                </form>
+              ) : (
+                <>
+                  <div className="flex items-start gap-3 border-y border-slate-200 py-4 text-sm text-slate-600">
+                    <ShieldCheck size={18} className="mt-0.5 shrink-0 text-emerald-700" />
+                    <p>Signed in as <strong>{user.email}</strong>. The server will confirm that this account matches the release.</p>
+                  </div>
+                  <button type="button" onClick={handleClaim} disabled={busy} className="h-12 w-full bg-emerald-800 px-5 text-sm font-bold text-white hover:bg-emerald-900 disabled:opacity-60">{busy ? "Claiming..." : "Claim authorized allocation"}</button>
+                </>
+              )}
             </>
           ) : (
             <>

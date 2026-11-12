@@ -8,6 +8,7 @@ Follows the standard JSON response envelope:
 
 from django.http import FileResponse
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -18,6 +19,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.accounts.models import User
+from apps.accounts.models import Invitation
 from apps.accounts.permissions import IsActiveAccount, IsAdministrator
 from apps.accounts.services import log_audit_event
 from apps.audit.models import AuditEvent
@@ -37,6 +39,7 @@ from .serializers import (
     EligibilityAssessmentSerializer,
     EvidenceUploadSerializer,
     InformationRequestSerializer,
+    InvitedLawyerAssignmentSerializer,
     LawyerAssignmentSerializer,
     Module8StatusSerializer,
     VerificationCaseCreateSerializer,
@@ -45,6 +48,7 @@ from .serializers import (
 from .services import (
     assess_eligibility,
     assign_lawyer,
+    assign_invited_lawyer,
     dispatch_beneficiary_notification,
     get_case_beneficiary_allocations,
     authorize_will_disclosure,
@@ -71,10 +75,10 @@ class VerificationCaseListCreateAPIView(GenericAPIView):
         user = self.request.user
         if user.role == User.Role.ADMINISTRATOR:
             return VerificationCase.objects.all().select_related('will', 'initiator', 'assigned_lawyer')
-        elif user.role == User.Role.LAWYER_VERIFIER:
-            return VerificationCase.objects.filter(assigned_lawyer=user).select_related('will', 'initiator', 'assigned_lawyer')
         else:
-            return VerificationCase.objects.filter(initiator=user).select_related('will', 'initiator', 'assigned_lawyer')
+            return VerificationCase.objects.filter(
+                Q(initiator=user) | Q(assigned_lawyer=user),
+            ).select_related('will', 'initiator', 'assigned_lawyer').distinct()
 
     def get(self, request, *args, **kwargs):
         cases = self.get_queryset()
@@ -295,6 +299,28 @@ class CaseAssignLawyerAPIView(GenericAPIView):
         return Response({
             'data': output_serializer.data,
             'message': 'Lawyer verifier assigned successfully.',
+        })
+
+
+class CaseAssignInvitedLawyerAPIView(GenericAPIView):
+    permission_classes = [IsAuthenticated, IsActiveAccount, IsCaseInitiator]
+    serializer_class = InvitedLawyerAssignmentSerializer
+    queryset = VerificationCase.objects.all().select_related('will', 'initiator', 'assigned_lawyer')
+
+    @transaction.atomic
+    def post(self, request, pk, *args, **kwargs):
+        case = get_object_or_404(VerificationCase.objects.select_for_update(), pk=pk)
+        self.check_object_permissions(request, case)
+        input_serializer = self.get_serializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        invitation = get_object_or_404(
+            Invitation.objects.select_for_update().select_related('accepted_user', 'will'),
+            pk=input_serializer.validated_data['invitation_id'],
+        )
+        case = assign_invited_lawyer(case, invitation, request.user, request=request)
+        return Response({
+            'data': VerificationCaseSerializer(case).data,
+            'message': 'The accepted legal verifier invitation was assigned to this case.',
         })
 
 

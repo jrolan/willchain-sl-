@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { ReactNode, useMemo, useState } from "react";
 import {
   Activity,
+  Blocks,
   ChevronDown,
   ChevronRight,
   FileText,
@@ -93,7 +94,6 @@ const roleNavigation: Record<UserRole, NavigationGroup[]> = {
   WITNESS: [
     { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
-    { label: "My Allocations", href: "/dashboard/beneficiary-allocations", icon: FileText },
     { label: "Attestation Status", href: "/dashboard#role-workspace", icon: UserCheck },
     { label: "Account Verification", href: "/dashboard#verification", icon: ShieldCheck },
     { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
@@ -105,7 +105,6 @@ const roleNavigation: Record<UserRole, NavigationGroup[]> = {
   LAWYER_VERIFIER: [
     { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { label: "My Profile", href: "/profile", icon: UserRound },
-    { label: "My Allocations", href: "/dashboard/beneficiary-allocations", icon: FileText },
     { label: "Verification Workflow", href: "/dashboard/verification", icon: Gavel },
     { label: "Verification Readiness", href: "/dashboard#role-workspace", icon: Gavel },
     { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
@@ -116,8 +115,8 @@ const roleNavigation: Record<UserRole, NavigationGroup[]> = {
   ],
   ADMINISTRATOR: [
     { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
+    { label: "Integrity Operations", href: "/dashboard/integrity", icon: Blocks },
     { label: "My Profile", href: "/profile", icon: UserRound },
-    { label: "My Allocations", href: "/dashboard/beneficiary-allocations", icon: FileText },
     { label: "Recent Activity", href: "/dashboard#activity", icon: Activity },
     { label: "Security", href: "/dashboard#security", icon: ShieldCheck, children: [
       { label: "Account Settings", href: "/profile", icon: UserRound },

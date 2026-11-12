@@ -25,7 +25,7 @@ from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
-from apps.accounts.models import User
+from apps.accounts.models import Invitation, User
 from apps.audit.models import AuditEvent
 from apps.beneficiaries.models import BeneficiaryAllocation, WillBeneficiary
 from apps.wills.models import Will
@@ -290,6 +290,67 @@ class VerificationModuleTests(APITestCase):
         self.assertNotIn('title', detail_res.data['data'])
         self.assertNotIn('content', detail_res.data['data'])
         self.assertEqual(detail_res.data['data']['will'], self.finalized_will.pk)
+
+    def test_owner_assigns_accepted_will_scoped_lawyer_without_changing_global_role(self):
+        invited_lawyer = self.create_user('invited-lawyer-owner@example.com', role=User.Role.OWNER)
+        invitation = Invitation.objects.create(
+            inviter=self.owner,
+            accepted_user=invited_lawyer,
+            will=self.finalized_will,
+            email=invited_lawyer.email,
+            role=Invitation.RoleChoices.LAWYER_VERIFIER,
+            status=Invitation.Status.ACCEPTED,
+            accepted_at=timezone.now(),
+        )
+        self.client.force_authenticate(self.owner)
+        created_case = self.client.post(reverse('verification:case-list'), {
+            'case_type': VerificationCase.CaseType.PRE_DEATH_REVIEW,
+            'submission_type': VerificationCase.SubmissionType.OWNER_INITIATED,
+            'will': self.finalized_will.pk,
+        })
+        case_id = created_case.data['data']['id']
+
+        assignment_response = self.client.post(
+            reverse('verification:case-assign-invited-lawyer', kwargs={'pk': case_id}),
+            {'invitation_id': invitation.pk},
+            format='json',
+        )
+
+        self.assertEqual(assignment_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(assignment_response.data['data']['initiator_id'], self.owner.pk)
+        self.assertEqual(assignment_response.data['data']['assigned_lawyer_id'], invited_lawyer.pk)
+        invited_lawyer.refresh_from_db()
+        self.assertEqual(invited_lawyer.role, User.Role.OWNER)
+
+        self.client.force_authenticate(invited_lawyer)
+        case_list = self.client.get(reverse('verification:case-list'))
+        self.assertIn(case_id, [item['id'] for item in case_list.data['data']])
+        case_detail = self.client.get(reverse('verification:case-detail', kwargs={'pk': case_id}))
+        self.assertEqual(case_detail.status_code, status.HTTP_200_OK)
+        self.assertNotIn('content', case_detail.data['data'])
+        self.assertNotIn('title', case_detail.data['data'])
+        will_response = self.client.get(reverse('wills:will-lawyer-view', args=[self.finalized_will.pk]))
+        self.assertEqual(will_response.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(self.owner)
+        disclosure_response = self.client.post(
+            reverse('verification:case-authorize-disclosure', kwargs={'pk': case_id}),
+            {'file': make_test_file('owner-approved-copy.pdf')},
+            format='multipart',
+        )
+        self.assertEqual(disclosure_response.status_code, status.HTTP_200_OK)
+        self.client.force_authenticate(invited_lawyer)
+        authorized_will_response = self.client.get(reverse('wills:will-lawyer-view', args=[self.finalized_will.pk]))
+        self.assertEqual(authorized_will_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(authorized_will_response.data['data']['content']['body'], 'Confidential will content.')
+        self.assertEqual(
+            self.client.patch(
+                reverse('wills:will-detail', args=[self.finalized_will.pk]),
+                {'title': 'Changed by legal reviewer'},
+                format='json',
+            ).status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
 
     def test_owner_can_authorize_disclosure_and_creates_separate_audit_events(self):
         self.client.force_authenticate(self.owner)

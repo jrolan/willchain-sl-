@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     BeneficiaryReleaseNotificationRetryAPIView,
     CaseAssignLawyerAPIView,
+    CaseAssignInvitedLawyerAPIView,
     CaseAuthorizeBeneficiaryReleaseAPIView,
     CaseBeneficiaryAllocationReviewAPIView,
     CaseBeneficiaryAllocationListAPIView,
@@ -32,6 +33,7 @@ urlpatterns = [
     path('cases/<int:pk>/', VerificationCaseDetailAPIView.as_view(), name='case-detail'),
     path('cases/<int:pk>/submit/', CaseSubmitAPIView.as_view(), name='case-submit'),
     path('cases/<int:pk>/assign-lawyer/', CaseAssignLawyerAPIView.as_view(), name='case-assign-lawyer'),
+    path('cases/<int:pk>/assign-invited-lawyer/', CaseAssignInvitedLawyerAPIView.as_view(), name='case-assign-invited-lawyer'),
     path('cases/<int:pk>/assess-eligibility/', CaseEligibilityAPIView.as_view(), name='case-assess-eligibility'),
     path('cases/<int:pk>/evidence/', CaseEvidenceListCreateAPIView.as_view(), name='case-evidence'),
     path('cases/<int:pk>/evidence/<int:evidence_pk>/download/', CaseEvidenceDownloadAPIView.as_view(), name='case-evidence-download'),

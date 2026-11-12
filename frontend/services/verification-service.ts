@@ -16,6 +16,12 @@ export const getCases = () =>
 export const getCase = (id: number) =>
   apiRequest<{ data: VerificationCase }>(`${BASE}/cases/${id}/`);
 
+export const assignInvitedLawyer = (caseId: number, invitationId: number) =>
+  apiRequest<{ data: VerificationCase; message: string }>(
+    `${BASE}/cases/${caseId}/assign-invited-lawyer/`,
+    { method: "POST", body: JSON.stringify({ invitation_id: invitationId }) },
+  );
+
 export const getLawyerWill = (willId: number) =>
   apiRequest<{ data: LawyerWillContent }>(`/wills/${willId}/lawyer-view/`);
 
@@ -139,4 +145,3 @@ export const withdrawCase = (caseId: number) =>
 
 export const getWillVerificationStatus = (willId: number) =>
   apiRequest<{ data: Module8VerificationStatus }>(`${BASE}/status/${willId}/`);
-

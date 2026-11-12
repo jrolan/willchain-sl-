@@ -4,6 +4,13 @@ import type { Will, WillPayload } from "@/types/wills";
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1";
 let accessToken: string | null = null;
 
+export class ApiRequestError extends Error {
+  constructor(message: string, public readonly status: number, public readonly code?: string) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 export function getAccessToken(): string | null {
   return accessToken;
 }
@@ -25,6 +32,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
   const raw = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   const nestedError = raw.error && typeof raw.error === 'object' ? raw.error : null;
   let message = (nestedError && 'message' in nestedError ? nestedError.message : undefined) ?? raw.detail ?? raw.message;
+  const code = nestedError && 'code' in nestedError && typeof nestedError.code === "string" ? nestedError.code : undefined;
   if (!message && typeof raw === "object") {
     const firstKey = Object.keys(raw)[0];
     if (firstKey) {
@@ -32,7 +40,11 @@ async function parseResponse<T>(response: Response): Promise<T> {
       message = Array.isArray(val) ? val.join(" ") : String(val);
     }
   }
-  throw new Error(typeof message === 'string' && message ? message : "The request could not be completed.");
+  throw new ApiRequestError(
+    typeof message === 'string' && message ? message : "The request could not be completed.",
+    response.status,
+    code,
+  );
 }
 
 async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
@@ -185,7 +197,7 @@ export async function getInvitations(): Promise<{ data: Invitation[] }> {
   return request("/auth/invitations/");
 }
 
-export async function sendInvitation(payload: { email: string; first_name?: string; last_name?: string; role: string; message?: string }): Promise<{ data: Invitation; message: string }> {
+export async function sendInvitation(payload: { email: string; first_name?: string; last_name?: string; role: string; message?: string; will: number }): Promise<{ data: Invitation; message: string }> {
   return request("/auth/invitations/", {
     method: "POST",
     body: JSON.stringify(payload),
@@ -200,6 +212,36 @@ export async function acceptInvitation(payload: { token: string; email?: string;
   return request<{ data: User; message: string }>("/auth/invitations/accept/", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function getMyCollaborations(): Promise<{ data: Invitation[] }> {
+  return request("/auth/my-collaborations/");
+}
+
+export interface WitnessAssignment {
+  invitation_id: number;
+  will_id: number;
+  will_title: string;
+  will_status: string;
+  will_version: number;
+  attestation_status: "NOT_READY" | "PENDING" | "ATTESTED" | "DECLINED";
+  responded_at: string | null;
+  attested_version: number | null;
+}
+
+export async function getMyWitnessAssignments(): Promise<{ data: WitnessAssignment[] }> {
+  return request("/wills/my-witness-assignments/");
+}
+
+export async function recordWitnessAttestation(
+  invitationId: number,
+  decision: "ATTESTED" | "DECLINED",
+  witnessedSigning = false,
+): Promise<{ data: { invitation_id: number; will_id: number; status: string; will_version: number; responded_at: string }; message: string }> {
+  return request(`/wills/witness-assignments/${invitationId}/attestation/`, {
+    method: "POST",
+    body: JSON.stringify({ decision, witnessed_signing: witnessedSigning }),
   });
 }
 

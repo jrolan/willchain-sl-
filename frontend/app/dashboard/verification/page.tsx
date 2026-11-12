@@ -15,8 +15,11 @@ import {
 } from "lucide-react";
 
 import { DashboardShell } from "@/components/layout/dashboard-shell";
+import { WillIntegrityPanel } from "@/components/integrity/will-integrity-panel";
 import { useAuth } from "@/lib/auth-context";
+import { getInvitations } from "@/services/auth-service";
 import {
+  assignInvitedLawyer,
   assessEligibility,
   authorizeCaseBeneficiaryReleases,
   authorizeDisclosure,
@@ -37,6 +40,7 @@ import {
   uploadEvidence,
   withdrawCase,
 } from "@/services/verification-service";
+import type { Invitation } from "@/types/auth";
 import type {
   CaseEvidence,
   CaseBeneficiaryAllocation,
@@ -64,6 +68,8 @@ const STATUS_BADGE_CLASSES: Record<CaseStatus, string> = {
 export default function VerificationDashboardPage() {
   const { user } = useAuth();
   const [cases, setCases] = useState<VerificationCase[]>([]);
+  const [lawyerInvitations, setLawyerInvitations] = useState<Invitation[]>([]);
+  const [selectedInvitationId, setSelectedInvitationId] = useState("");
   const [selectedCase, setSelectedCase] = useState<VerificationCase | null>(null);
   const [lawyerWill, setLawyerWill] = useState<LawyerWillContent | null>(null);
   const [lawyerWillCaseId, setLawyerWillCaseId] = useState<number | null>(null);
@@ -96,6 +102,7 @@ export default function VerificationDashboardPage() {
   const [disclosureFile, setDisclosureFile] = useState<File | null>(null);
   const selectedCaseId = selectedCase?.id;
   const selectedWillId = selectedCase?.will;
+  const selectedCaseAssignedLawyerId = selectedCase?.assigned_lawyer_id;
   const selectedCaseType = selectedCase?.case_type;
   const selectedCaseStatus = selectedCase?.status;
 
@@ -135,7 +142,22 @@ export default function VerificationDashboardPage() {
   }, []);
 
   useEffect(() => {
-    if (user?.role !== "LAWYER_VERIFIER" || !selectedWillId || !selectedCaseId) {
+    if (user?.role !== "OWNER") return;
+    let active = true;
+    getInvitations()
+      .then(({ data }) => {
+        if (active) setLawyerInvitations(data.filter((invitation) => invitation.role === "LAWYER_VERIFIER" && invitation.status === "ACCEPTED"));
+      })
+      .catch((requestError: unknown) => {
+        if (active) setError(requestError instanceof Error ? requestError.message : "Unable to load accepted legal verifier invitations.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [user?.role]);
+
+  useEffect(() => {
+    if (selectedCaseAssignedLawyerId !== user?.id || !selectedWillId || !selectedCaseId) {
       return;
     }
     let active = true;
@@ -158,10 +180,10 @@ export default function VerificationDashboardPage() {
     return () => {
       active = false;
     };
-  }, [selectedCaseId, selectedWillId, user?.role]);
+  }, [selectedCaseAssignedLawyerId, selectedCaseId, selectedWillId, user?.id]);
 
   useEffect(() => {
-    const hasAllocationPermission = user?.role === "LAWYER_VERIFIER" || user?.role === "ADMINISTRATOR";
+    const hasAllocationPermission = user?.role === "ADMINISTRATOR" || selectedCaseAssignedLawyerId === user?.id;
     if (!hasAllocationPermission || !selectedCaseId || selectedCaseType !== "POST_DEATH_VERIFY" || !["UNDER_REVIEW", "APPROVED"].includes(selectedCaseStatus ?? "")) {
       return;
     }
@@ -179,13 +201,32 @@ export default function VerificationDashboardPage() {
     return () => {
       active = false;
     };
-  }, [selectedCaseId, selectedCaseType, selectedCaseStatus, user?.role]);
+  }, [selectedCaseAssignedLawyerId, selectedCaseId, selectedCaseType, selectedCaseStatus, user?.id, user?.role]);
 
   function selectCase(caseItem: VerificationCase) {
     setSelectedCase(caseItem);
     setSelectedReleaseIds([]);
-    setLoadingLawyerWill(user?.role === "LAWYER_VERIFIER" && Boolean(caseItem.will));
+    setLawyerWill(null);
+    setLawyerWillCaseId(null);
+    setLoadingLawyerWill(caseItem.assigned_lawyer_id === user?.id && Boolean(caseItem.will));
   }
+
+  const handleAssignInvitedLawyer = async () => {
+    if (!selectedCase || !selectedInvitationId) return;
+    setBusy(true);
+    setError(null);
+    setSuccessMessage(null);
+    try {
+      const response = await assignInvitedLawyer(selectedCase.id, Number(selectedInvitationId));
+      setSelectedCase(response.data);
+      setSuccessMessage(response.message);
+      await fetchCases();
+    } catch (requestError: unknown) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to assign this invited legal verifier.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const handleCreateCase = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -488,7 +529,9 @@ export default function VerificationDashboardPage() {
     }
   };
 
-  const isLawyer = user?.role === "LAWYER_VERIFIER";
+  const isLawyer = Boolean(user && selectedCase && selectedCase.assigned_lawyer_id === user.id);
+  const isLawyerAccount = user?.role === "LAWYER_VERIFIER";
+  const availableLawyerInvitations = lawyerInvitations.filter((invitation) => invitation.will === selectedCase?.will);
 
   return (
     <DashboardShell>
@@ -517,7 +560,7 @@ export default function VerificationDashboardPage() {
         )}
 
         {/* Create Case Form (for non-lawyers or anyone initiating) */}
-        {!isLawyer && (
+        {!isLawyerAccount && (
           <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
               Initiate a Verification Case
@@ -719,6 +762,24 @@ export default function VerificationDashboardPage() {
                       No legal verifier has been assigned to this case yet.
                     </p>
                   )}
+                  {selectedCase.initiator_id === user?.id && selectedCase.will && !selectedCase.assigned_lawyer_id && (
+                    <div className="mt-4 border-t border-slate-200 pt-4 dark:border-slate-700">
+                      <label className="block text-xs font-medium text-slate-700 dark:text-slate-300" htmlFor="invited-lawyer">Assign an accepted legal verifier invited to this will</label>
+                      {availableLawyerInvitations.length === 0 ? (
+                        <p className="mt-2 text-xs text-slate-500">No accepted lawyer invitation exists for this will yet.</p>
+                      ) : (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <select id="invited-lawyer" value={selectedInvitationId} onChange={(event) => setSelectedInvitationId(event.target.value)} className="min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white">
+                            <option value="">Select an invited lawyer</option>
+                            {availableLawyerInvitations.map((invitation) => <option key={invitation.id} value={invitation.id}>{invitation.first_name || invitation.email} · {invitation.status}</option>)}
+                          </select>
+                          <button type="button" onClick={handleAssignInvitedLawyer} disabled={busy || !selectedInvitationId} className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+                            {busy ? "Assigning..." : "Assign"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Claimed Executor Basis */}
@@ -761,6 +822,15 @@ export default function VerificationDashboardPage() {
                       <p className="mt-4 text-sm text-slate-500">Will content is unavailable for this case or disclosure is not active.</p>
                     )}
                   </section>
+                )}
+
+                {isLawyer && selectedCase.will && lawyerWill && lawyerWillCaseId === selectedCase.id && (
+                  <WillIntegrityPanel
+                    key={`lawyer-integrity-${selectedCase.id}`}
+                    willId={selectedCase.will}
+                    mode="lawyer"
+                    refreshKey={`${selectedCase.id}-${lawyerWill.version}`}
+                  />
                 )}
 
                 {isLawyer && selectedCase.case_type === "POST_DEATH_VERIFY" && ["UNDER_REVIEW", "APPROVED"].includes(selectedCase.status) && (
@@ -1199,4 +1269,3 @@ export default function VerificationDashboardPage() {
     </DashboardShell>
   );
 }
-

@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'apps.beneficiaries',
     'apps.documents',
     'apps.verification',
+    'apps.integrity',
 ]
 
 MIDDLEWARE = [
@@ -148,6 +149,19 @@ MEDIA_ROOT = BASE_DIR / 'media'
 PRIVATE_DOCUMENT_ROOT = Path(
     env('PRIVATE_DOCUMENT_ROOT', default=str(BASE_DIR / 'private_documents'))
 ).expanduser()
+
+INTEGRITY_NETWORK_NAME = env('INTEGRITY_NETWORK_NAME', default='hardhat-local')
+INTEGRITY_CHAIN_ID = env.int('INTEGRITY_CHAIN_ID', default=31337)
+INTEGRITY_RPC_URL = env('INTEGRITY_RPC_URL', default='http://127.0.0.1:8545')
+INTEGRITY_RPC_TIMEOUT = env.int('INTEGRITY_RPC_TIMEOUT', default=15)
+INTEGRITY_RPC_TIMEOUT = max(1, INTEGRITY_RPC_TIMEOUT)
+INTEGRITY_CONFIRMATIONS = env.int('INTEGRITY_CONFIRMATIONS', default=1)
+INTEGRITY_CONTRACT_ADDRESS = env('INTEGRITY_CONTRACT_ADDRESS', default='')
+INTEGRITY_SIGNER_PRIVATE_KEY = env('INTEGRITY_SIGNER_PRIVATE_KEY', default='')
+INTEGRITY_ENCRYPTION_KEY = env('INTEGRITY_ENCRYPTION_KEY', default='')
+
+if INTEGRITY_CONFIRMATIONS < 1:
+    raise ImproperlyConfigured('INTEGRITY_CONFIRMATIONS must be at least 1.')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

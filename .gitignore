@@ -43,3 +43,6 @@ backend/PHASE*_REPORT.md
 # Generated Next.js files
 frontend/next-env.d.ts
 frontend/tsconfig.tsbuildinfo
+
+blockchain/artifacts/
+blockchain/cache/

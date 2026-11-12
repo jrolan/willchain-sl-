@@ -157,7 +157,7 @@ export default function AcceptInvitationPage() {
     <AuthShell
       eyebrow="Estate Collaborator Invitation"
       title="Join WillChain SL."
-      description={`You have been invited by ${invitation?.inviter_name} as an authorized ${invitation?.role_display}. Your invitation does not grant access to a will.`}
+      description={`You have been invited by ${invitation?.inviter_name} as an authorized ${invitation?.role_display}${invitation?.will_title ? ` for “${invitation.will_title}”` : ""}. The invitation does not grant access to private will contents.`}
     >
       <div className="mb-6 flex items-center gap-3 rounded-xl border border-[#c7a86b]/40 bg-[#fffaf0] p-4">
         {getRoleIcon(invitation?.role)}
@@ -173,7 +173,7 @@ export default function AcceptInvitationPage() {
         </div>
       )}
       {notice && <p role="status" className="mb-5 rounded-lg border border-[#b8d9ca] bg-[#effaf4] px-4 py-3 text-sm leading-6 text-[#176b5b]">{notice}</p>}
-      {invitation && <p className="mb-5 text-sm text-[#60776e]">Invitation sent to {invitation.email}.</p>}
+      {invitation && <p className="mb-5 text-sm text-[#60776e]">Invitation sent to {invitation.email}{invitation.will_title ? ` for ${invitation.will_title}` : ""}. Accepting it adds only this will-scoped collaboration.</p>}
 
       {user ? (
         <div className="grid gap-4">
